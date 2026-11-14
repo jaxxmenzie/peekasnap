@@ -161,7 +161,7 @@ app.get('/sw.js', (req, res) => { res.type('application/javascript'); res.set({ 
 // index.html is served with versioned asset URLs (?v=<build>) so phones never run an old cached app.js against a new page
 const BUILD = (process.env.RENDER_GIT_COMMIT || '').slice(0, 8) || String(Date.now());
 const INDEX_HTML = fs.readFileSync(path.join(__dirname, 'public', 'index.html'), 'utf8')
-  .replace(/(src|href)="\/(app\.js|game\.js|hunt\.js|styles\.css)"/g, `$1="/$2?v=${BUILD}"`);
+  .replace(/(src|href)="\/(app\.js|game\.js|hunt\.js|call\.js|styles\.css)"/g, `$1="/$2?v=${BUILD}"`);
 const sendIndex = (req, res) => { res.type('html'); res.set('Cache-Control', 'no-cache'); res.send(INDEX_HTML); };
 app.get(['/', '/index.html'], sendIndex);
 app.get('/api/version', (req, res) => res.json({ build: BUILD }));
@@ -543,6 +543,7 @@ const ctx = { app, io, db, save, now, id, auth, member, bad, upload, publicUser,
 const social = require('./lib/social')(ctx);
 ctx.social = social;
 const manhunt = require('./lib/manhunt')(ctx);
+require('./lib/calls')(ctx);
 setInterval(() => { social.tick(); manhunt.tick(); }, TICK_MS);
 if (process.env.ALLOW_TEST_CLOCK === '1') {
   app.post('/api/test/clock', (req, res) => { clockOffset += Number(req.body.advanceMs) || 0; social.tick(); manhunt.tick(); tick(); res.json({ now: now() }); });

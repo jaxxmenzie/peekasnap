@@ -50,8 +50,8 @@ const { startServer, reporter, once } = require('./helpers');
 
     // snaps: view once, one replay, sender sees "opened"
     const snapEvt = once(sb, 'message', 4000, m => m.type === 'snap');
-    const sent = await api('/api/snaps', { token: a.token, form: { photo: 1, to: [b.user.id], timer: 5 } });
-    ok(sent.snaps.length === 1, 'Ava sends Ben a 5 s snap');
+    const sent = await api('/api/snaps', { token: a.token, form: { photo: 1, to: [b.user.id], timer: 5, replay: '0' } });
+    ok(sent.snaps.length === 1, 'Ava sends Ben a 5 s snap (Allow replay off)');
     const sm = await snapEvt;
     ok(sm.snap.state === 'new' && !sm.photo, 'Ben sees an unopened snap (no photo URL leaked in chat)');
     const inbox = await api('/api/snaps/inbox', { token: b.token });
@@ -69,7 +69,7 @@ const { startServer, reporter, once } = require('./helpers');
     const snapFiles = () => fs.readdirSync(path.join(S.dir, 'd', 'snaps')).length;
     ok(snapFiles() === 0, 'snap photo deleted from the server once viewed + replayed');
     // unopened snap with no time limit; replay window expiry
-    const s2 = await api('/api/snaps', { token: b.token, form: { photo: 1, to: [a.user.id], timer: 0 } });
+    const s2 = await api('/api/snaps', { token: b.token, form: { photo: 1, to: [a.user.id], timer: 0, replay: '0' } });
     await api(`/api/snaps/${s2.snaps[0]}/open`, { token: a.token, body: {} });
     await advance(11 * 60e3);
     ok((await api(`/api/snaps/${s2.snaps[0]}/replay`, { token: a.token, body: {} })).status === 410 && snapFiles() === 0, 'replay window closes after 10 min and the file is purged');

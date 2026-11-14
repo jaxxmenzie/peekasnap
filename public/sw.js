@@ -1,7 +1,7 @@
 /* PeekaSnap service worker: app-shell cache, offline fallback, push + notification clicks */
-const VERSION = 'peekasnap-v7';
+const VERSION = 'peekasnap-v8';
 const SHELL = [
-  '/', '/index.html', '/styles.css', '/app.js', '/game.js', '/hunt.js', '/manifest.json', '/offline.html', '/icon.svg',
+  '/', '/index.html', '/styles.css', '/app.js', '/game.js', '/hunt.js', '/call.js', '/manifest.json', '/offline.html', '/icon.svg',
   '/icons/icon-192.png', '/icons/icon-512.png', '/icons/maskable-512.png', '/icons/apple-touch-icon.png', '/icons/favicon-32.png',
   '/vendor/leaflet/leaflet.css', '/vendor/leaflet/leaflet.js', '/socket.io/socket.io.js',
 ];
@@ -37,7 +37,8 @@ self.addEventListener('push', e => {
     if (list.some(c => c.visibilityState === 'visible' && c.focused)) return;
     return self.registration.showNotification(d.title || 'PeekaSnap', {
       body: d.body || '', icon: '/icons/icon-192.png', badge: '/icons/icon-96.png', tag: d.tag || 'peekasnap',
-      renotify: true, vibrate: [200, 100, 200, 100, 400], data: { url: d.url || '/' },
+      renotify: true, vibrate: d.call ? [500, 300, 500, 300, 500, 300, 500] : [200, 100, 200, 100, 400], data: { url: d.url || '/' },
+      requireInteraction: !!d.call,
     });
   }));
 });

@@ -81,6 +81,7 @@
     <div id="cam-fallback" class="cam-fallback hidden"><div class="big-emoji">📸</div><p>Tap the shutter to take a Peak</p></div>
     <div id="hide-mode-pill" class="hide-mode-pill hidden">🫣 Take a Peak of the object you want to hide <button id="hide-mode-x">✕</button></div>
     <div class="cam-controls">
+      <button id="cam-memories" class="round-btn glass" title="Memories">🗂️</button>
       <button id="cam-upload" class="round-btn glass" title="Camera roll">🖼️</button>
       <button id="shutter" class="shutter" aria-label="Take Peak"></button>
       <button id="cam-inbox" class="round-btn glass" title="New Peaks">📩<i id="inbox-count" class="count hidden"></i></button>
@@ -177,6 +178,7 @@
       <label class="send-row story-row"><input type="checkbox" id="send-story"><span class="avatar story-av">＋</span><b class="grow">My Story</b><small>24h · friends</small></label>
       <div id="send-groups-title" class="section-title dark">Groups</div><div id="send-groups"></div>
       <div class="section-title dark">Friends</div><div id="send-friends"></div>
+      <div class="setting"><div class="grow"><b>🔁 Allow replay</b><div class="muted">Friends can re-open this Peak later from your chat. Turn off for view-once.</div></div><label class="switch"><input type="checkbox" id="send-replay" checked><i></i></label></div>
     </div>
     <div class="send-bar"><div id="send-summary" class="grow"></div><button id="send-go" class="send-btn big">➤</button></div>
   </div>
@@ -195,6 +197,8 @@
     <button id="thread-back" class="round-btn">‹</button>
     <div id="thread-av" class="avatar"></div>
     <div class="grow"><b id="thread-title"></b><div id="thread-sub" class="muted"></div></div>
+    <button id="thread-call" class="round-btn" title="Voice call" aria-label="Voice call">📞</button>
+    <button id="thread-video" class="round-btn" title="Video call" aria-label="Video call">📹</button>
     <button id="thread-info" class="round-btn">⋯</button>
   </div>
   <div id="thread-feed" class="chat-feed"></div>
@@ -252,6 +256,47 @@
     </div></div>
 </section>
 
+<!-- ============ PERSON PROFILE ============ -->
+<section id="person-sheet" class="sheet-wrap hidden">
+  <div class="sheet tall"><div class="grab"></div>
+    <div class="sheet-head"><span></span><button class="x" data-close>✕</button></div>
+    <div id="person-body" class="sheet-body person"></div>
+  </div>
+</section>
+
+<!-- ============ MEMORIES ============ -->
+<section id="memories" class="overlay memories hidden">
+  <div class="mem-head"><button id="mem-close" class="round-btn">‹</button><h2 class="grow">Memories</h2><span id="mem-count" class="muted"></span></div>
+  <div id="mem-grid" class="mem-grid"></div>
+</section>
+<section id="mem-viewer" class="overlay hidden">
+  <img id="mem-img" alt="">
+  <div class="snap-top"><div id="mem-when" class="grow"></div><button id="mem-del" class="round-btn glass" title="Delete">🗑</button><button id="mem-x" class="round-btn glass">✕</button></div>
+</section>
+
+<!-- ============ CALLS ============ -->
+<section id="call" class="overlay call hidden" aria-live="polite">
+  <video id="call-remote" autoplay playsinline></video>
+  <video id="call-local" autoplay playsinline muted></video>
+  <audio id="call-audio" autoplay></audio>
+  <div class="call-info">
+    <div id="call-av" class="avatar call-av"></div>
+    <h2 id="call-name"></h2>
+    <div id="call-status" class="call-status"></div>
+  </div>
+  <div id="call-incoming" class="call-row hidden">
+    <button id="call-decline" class="call-btn red" aria-label="Decline">✕<small>Decline</small></button>
+    <button id="call-accept" class="call-btn green" aria-label="Accept">📞<small>Accept</small></button>
+  </div>
+  <div id="call-controls" class="call-row hidden">
+    <button id="call-mute" class="call-btn" aria-label="Mute">🎙️<small>Mute</small></button>
+    <button id="call-cam" class="call-btn" aria-label="Camera">📷<small>Camera</small></button>
+    <button id="call-flip" class="call-btn" aria-label="Flip camera">🔄<small>Flip</small></button>
+    <button id="call-speaker" class="call-btn hidden" aria-label="Speaker">🔊<small>Speaker</small></button>
+    <button id="call-end" class="call-btn red" aria-label="End call"><span class="hang">📞</span><small>End</small></button>
+  </div>
+</section>
+
 <!-- ============ FRIENDS ============ -->
 <section id="friends-sheet" class="sheet-wrap hidden">
   <div class="sheet tall">
@@ -276,6 +321,7 @@
       <div class="profile-top"><button id="profile-av-btn" class="av-edit" aria-label="Change profile picture"><div id="profile-av" class="avatar xl"></div><i>📷</i></button><div class="grow"><b id="profile-name"></b><div id="profile-user" class="muted"></div></div><button id="name-btn" class="chip" title="Edit display name">✏️ Name</button></div>
       <div class="av-actions"><button id="av-change" class="btn-glass dark">📷 Change picture</button><button id="av-remove" class="btn-glass dark hidden">🗑 Remove picture</button></div>
       <input id="av-camera" type="file" accept="image/*" capture="user" hidden><input id="av-library" type="file" accept="image/*" hidden>
+      <button id="profile-memories" class="btn-glass dark wide">🗂️ Memories</button>
       <button id="share-username" class="btn-glass dark wide">🔗 Share my username</button>
       <div class="setting"><div class="grow"><b>👻 Ghost Mode</b><div class="muted">When on, friends can't see you on the Map. Location is only shared during an active Manhunt.</div></div><label class="switch"><input type="checkbox" id="ghost-switch" checked><i></i></label></div>
       <button id="password-btn" class="btn-glass dark wide">🔒 Change password</button>
@@ -489,5 +535,6 @@
 <script src="/app.js"></script>
 <script src="/game.js"></script>
 <script src="/hunt.js"></script>
+<script src="/call.js"></script>
 </body>
 </html>

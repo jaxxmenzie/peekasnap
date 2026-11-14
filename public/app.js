@@ -81,7 +81,7 @@ function banner(html, ms = 6000) {
   clearTimeout(bannerTimer); bannerTimer = setTimeout(() => b.classList.add('hidden'), ms);
   b.onclick = () => b.classList.add('hidden');
 }
-const avatarHtml = (u, cls = '') => u ? `<span class="avatar ${u.avatar ? 'has-pic' : ''} ${cls}" style="background:${u.avatar ? '#111' : AV_RED}">${avInner(u)}</span>` : '';
+const avatarHtml = (u, cls = '') => u ? `<span class="avatar ${u.avatar ? 'has-pic' : ''} ${cls}" data-person="${esc(u.id)}" style="background:${u.avatar ? '#111' : AV_RED}">${avInner(u)}</span>` : '';
 const fmtTime = t => new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 function ago(t) {
   const s = Math.max(0, (Date.now() - t) / 1000);
@@ -481,8 +481,17 @@ async function composeSnap() {
   ED.stickers.forEach(s => g.fillText(s.e, s.x * W, s.y * Hh));
   return new Promise(r => c.toBlob(r, 'image/jpeg', 0.86));
 }
+// small thumbnail for chat history, Memories and profiles (~5 KB)
+async function makeThumb(blob, w = 200) {
+  try {
+    const bmp = await createImageBitmap(blob), h = Math.round(w * bmp.height / bmp.width);
+    const c = document.createElement('canvas'); c.width = w; c.height = h; c.getContext('2d').drawImage(bmp, 0, 0, w, h);
+    return await new Promise(r => c.toBlob(r, 'image/jpeg', 0.7));
+  } catch (_) { return null; }
+}
 $('#ed-story').onclick = async () => {
-  const fd = new FormData(); fd.append('photo', await composeSnap(), 'snap.jpg'); fd.append('story', '1'); fd.append('timer', ED.timer || 10);
+  const composed = await composeSnap(), th = await makeThumb(composed);
+  const fd = new FormData(); fd.append('photo', composed, 'snap.jpg'); if (th) fd.append('thumb', th, 'thumb.jpg'); fd.append('story', '1'); fd.append('timer', ED.timer || 10);
   try { await api('/api/snaps', { body: fd }); toast('Added to My Story ✨', 'y'); closeEditor(); refreshStories(); } catch (e) { toast(e.message); }
 };
 $('#ed-hide').onclick = async () => {
@@ -494,7 +503,7 @@ $('#ed-send').onclick = async () => { ED.composed = await composeSnap(); openSen
 // ---------- send to ----------
 const SEL = { to: new Set(), groups: new Set() };
 function openSendSheet() {
-  SEL.to.clear(); SEL.groups.clear(); $('#send-story').checked = false; $('#send-search').value = '';
+  SEL.to.clear(); SEL.groups.clear(); $('#send-story').checked = false; $('#send-search').value = ''; $('#send-replay').checked = true;
   renderSendRows(); renderSendSummary(); $('#send-sheet').classList.remove('hidden');
 }
 function renderSendRows() {
@@ -523,6 +532,8 @@ function renderSendSummary() {
 $('#send-story').onchange = renderSendSummary;
 $('#send-go').onclick = async () => {
   const fd = new FormData(); fd.append('photo', ED.composed, 'snap.jpg'); fd.append('timer', ED.timer);
+  const th = await makeThumb(ED.composed); if (th) fd.append('thumb', th, 'thumb.jpg');
+  fd.append('replay', $('#send-replay').checked ? '1' : '0');
   fd.append('to', JSON.stringify([...SEL.to])); fd.append('groups', JSON.stringify([...SEL.groups])); if ($('#send-story').checked) fd.append('story', '1');
   $('#send-go').disabled = true;
   try { await api('/api/snaps', { body: fd }); closeSheets(); closeEditor(); toast('Sent! ➤', 'y'); sonar('pop'); refreshChats(); refreshStories(); }
@@ -550,6 +561,16 @@ async function openSnap(id, replay = false) {
     toast(e.message); refreshInbox();
   }
 }
+// Re-open a Peak from chat history / a profile (no timer)
+async function openSnapHistory(id) {
+  try {
+    const r = await api(`/api/snaps/${id}/view`, { body: {} });
+    $('#sv-snap-img').src = r.image; $('#snap-from').innerHTML = `${avatarHtml(r.from)} <b>${esc(r.from.name)}</b> <small>${new Date(r.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric' })} · ${fmtTime(r.createdAt)}</small>`;
+    stopCamera(); clearInterval(snapTimer); $('#snap-ring').classList.add('hidden');
+    $('#snap-hint').textContent = 'Tap to close · saved in your chat';
+    $('#snap-viewer').classList.remove('hidden');
+  } catch (e) { toast(e.message); }
+}
 function closeSnap() {
   clearInterval(snapTimer); $('#snap-viewer').classList.add('hidden'); $('#sv-snap-img').src = '';
   debounceChats(); if (S.thread) openThread(S.thread.chatId, true);
@@ -570,6 +591,7 @@ function statusLine(c) {
     if (mine) return `<span class="st snap-sent">➤</span> ${m.snap?.state === 'opened' ? 'Opened' : 'Delivered'}${t}`;
     return `<span class="st snap-open">□</span> Received${t}`;
   }
+  if (m.type === 'call') return `<span class="st ${m.call?.status === 'ended' ? 'chat-sent' : 'snap-new'}">${m.call?.kind === 'video' ? '📹' : '📞'}</span> ${esc(m.text)}${t}`;
   if (!m.userId) return `<span class="muted">${esc(m.text).slice(0, 48)}</span>${t}`;
   if (c.unread) return `<span class="st chat-new">■</span> <b class="blue">New Chat</b>${t}`;
   if (mine) return `<span class="st chat-sent">➤</span> ${c.type === 'dm' && c.theirRead >= m.createdAt ? 'Opened' : 'Delivered'}${t}`;
@@ -613,6 +635,8 @@ async function openThread(chatId, silent) {
     t.classList.remove('has-pic');
     if (c.type === 'dm') { setAvatar(t, c.other); $('#thread-title').textContent = c.other.name; $('#thread-sub').textContent = `@${c.other.username}${c.other.nick ? ` · ${c.other.realName}` : ''}${c.streak ? ` · 🔥${c.streak}` : ''}`; }
     else { const g = S.groups.find(x => x.id === c.groupId) || {}; t.textContent = g.emoji || '👥'; t.style.background = '#2a2a2e'; $('#thread-title').textContent = g.name || 'Group'; $('#thread-sub').textContent = `${c.members.length} members${g.code ? ' · code ' + g.code : ''}`; }
+    $('#thread-call').classList.toggle('hidden', c.type !== 'dm' || c.canSend === false);
+    $('#thread-video').classList.toggle('hidden', c.type !== 'dm' || c.canSend === false);
     $('#thread-form').classList.toggle('hidden', c.canSend === false);
     $('#thread-locked').classList.toggle('hidden', c.canSend !== false);
     renderThread(); markThreadRead();
@@ -621,6 +645,9 @@ async function openThread(chatId, silent) {
 function markThreadRead() { if (S.thread) api(`/api/chats/${encodeURIComponent(S.thread.chatId)}/read`, { body: {} }).then(debounceChats).catch(() => {}); }
 function closeThread() { S.thread = null; $('#thread').classList.add('hidden'); refreshChats(); if (S.view === 'camera') startCamera(); }
 $('#thread-back').onclick = closeThread;
+$('#thread-call').onclick = () => S.thread?.other && startCall(S.thread.other, 'audio');
+$('#thread-video').onclick = () => S.thread?.other && startCall(S.thread.other, 'video');
+$$('#thread-av, #thread-title').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); if (S.thread?.type === 'dm') openPerson(S.thread.other.id); }));
 $('#thread-info').onclick = () => {
   const c = S.thread; if (!c) return;
   const g = S.groups.find(x => x.id === c.groupId);
@@ -706,6 +733,17 @@ function msgHtml(m) {
   if (m.type === 'hunt') return `<div class="card hunt-card"><div class="grow"><div class="t">${esc(m.text)}</div><div class="s">${fmtTime(m.createdAt)}</div></div></div>`;
   const me = m.userId === S.user.id, color = me ? 'var(--accent)' : m.user?.color || '#4FB7FF';
   let inner;
+  if (m.type === 'call') {
+    const c = m.call || {}, vid = c.kind === 'video', other = S.thread?.other;
+    const missed = c.status !== 'ended', who = me ? 'You called' : '';
+    return `<div class="call-log ${missed ? 'missed' : ''}"><span class="ci">${vid ? '📹' : '📞'}</span><div class="grow"><b>${esc(m.text)}</b><small>${who ? who + ' · ' : ''}${fmtTime(m.createdAt)}</small></div>${other && S.thread.canSend !== false ? `<button class="chip" data-callback="${vid ? 'video' : 'audio'}">Call back</button>` : ''}</div>`;
+  }
+  if (m.type === 'snap' && m.snap?.thumb) { // history entry: thumbnail you can tap to view again
+    const st = m.snap.state;
+    const label = me ? (st === 'opened' ? '➤ Opened' : st === 'some-opened' ? '➤ Opened by some' : '➤ Delivered') : '□ Opened';
+    inner = `<button class="snap-hist ${me ? 'mine' : ''}" data-snapview="${m.snapId}"><img src="${m.snap.thumb}" alt=""><span><b>${label}</b><small>${me && !m.snap.allowReplay ? 'View-once · tap to view' : 'Tap to view again'}</small></span></button>`;
+    return `<div class="msg ${me ? 'me' : ''}" style="color:${color}"><div class="who">${me ? 'Me' : esc(m.user?.name)}</div>${inner}</div>`;
+  }
   if (m.type === 'snap') {
     const st = m.snap?.state || 'delivered';
     const label = me ? (st === 'opened' ? '➤ Opened' : st === 'some-opened' ? '➤ Opened by some' : '➤ Delivered') + (m.snap?.replays ? ` · replayed` : '')
@@ -722,6 +760,8 @@ function renderThread() {
   f.innerHTML = html;
   $$('#thread-feed .mrow').forEach(r => onLongPress(r, () => deleteMsgFlow(S.threadMsgs.find(m => m.id === r.dataset.mid))));
   $$('#thread-feed [data-snap]').forEach(b => b.onclick = () => { if (b.closest('.mrow').dataset.lp) return; const st = b.dataset.st; if (st === 'new') openSnap(b.dataset.snap); else if (st === 'replayable') openSnap(b.dataset.snap, true); });
+  $$('#thread-feed [data-snapview]').forEach(b => b.onclick = () => { if (!b.closest('.mrow').dataset.lp) openSnapHistory(b.dataset.snapview); });
+  $$('#thread-feed [data-callback]').forEach(b => b.onclick = () => startCall(S.thread.other, b.dataset.callback));
   $$('#thread-feed [data-hide]').forEach(b => b.onclick = () => { if (!b.closest('.mrow').dataset.lp) openStory(b.dataset.hide); });
   f.scrollTop = f.scrollHeight;
 }
@@ -766,7 +806,10 @@ function renderFriends() {
 }
 function friendMenu(u) {
   askAction(u.name, '@' + u.username + (u.nick ? ' · ' + u.realName : ''), [
+    { label: '👤 View Profile', fn: () => openPerson(u.id) },
     { label: '💬 Chat', fn: () => { closeSheets(); openThread('dm_' + [S.user.id, u.id].sort().join('_')); } },
+    { label: '📞 Call', fn: () => startCall(u, 'audio') },
+    { label: '📹 Video call', fn: () => startCall(u, 'video') },
     { label: u.nick ? '✏️ Edit Nickname' : '✏️ Set Nickname', fn: () => nicknameFlow(u) },
     { label: '🚫 Remove Friend', danger: true, fn: () => removeFriendFlow(u) },
   ]);
@@ -926,6 +969,7 @@ $('#crop-save').onclick = async () => {
   finally { b.disabled = false; b.classList.remove('loading'); b.textContent = label; }
 };
 $('#notif-btn').onclick = enableAlerts;
+$('#profile-memories').onclick = () => { closeSheets(); openMemories(); };
 $('#groups-btn').onclick = () => { closeSheets(); openSheet('groups'); };
 $('#signout-btn').onclick = async () => {
   if (!await askConfirm(`Log out @${S.user.username}?`, 'You can log back in with your username and password.', 'Log out')) return;
@@ -1016,7 +1060,7 @@ function updateFriendMarker(d) {
   if (d.gone) { friendMarkers[d.userId]?.remove(); delete friendMarkers[d.userId]; return; }
   const u = d.user || S.friends.friends.find(f => f.user.id === d.userId)?.user; if (!u) return;
   if (friendMarkers[d.userId]) friendMarkers[d.userId].setLatLng([d.lat, d.lng]);
-  else friendMarkers[d.userId] = L.marker([d.lat, d.lng], { icon: personIcon(u) }).addTo(map).on('click', () => openThread('dm_' + [S.user.id, d.userId].sort().join('_')));
+  else friendMarkers[d.userId] = L.marker([d.lat, d.lng], { icon: personIcon(u) }).addTo(map).on('click', () => openPerson(d.userId));
 }
 function updateMeMarker() {
   if (!map || !S.myLoc) return;
@@ -1068,3 +1112,92 @@ $('#create-form').onsubmit = async e => {
 };
 
 document.addEventListener('DOMContentLoaded', boot);
+
+
+// ---------- tap any person -> their profile page ----------
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-person]');
+  if (!el || el.classList.contains('story-mini') || el.closest('#send-sheet, #person-sheet .pp-top, #call, #text-sheet')) return;
+  e.preventDefault(); e.stopPropagation(); openPerson(el.dataset.person);
+}, true);
+$('#sv-av').addEventListener('click', e => { e.stopPropagation(); });
+async function openPerson(uid) {
+  if (!uid) return;
+  if (uid === S.user.id) { closeSheets(); renderProfile(); $('#profile-sheet').classList.remove('hidden'); return; }
+  const body = $('#person-body');
+  body.innerHTML = '<div class="empty dark">Loading…</div>'; $('#person-sheet').classList.remove('hidden');
+  try { renderPerson(await api(`/api/users/${uid}/profile`)); }
+  catch (e) { body.innerHTML = `<div class="form-err show">${esc(e.message)}</div>`; }
+}
+function renderPerson(p) {
+  const u = p.user, fr = p.relation === 'friends';
+  const since = p.friendsSince ? new Date(p.friendsSince).toLocaleDateString([], { month: 'short', year: 'numeric' }) : null;
+  const btn = (id, label, cls = 'btn-glass dark') => `<button class="${cls}" data-pp="${id}">${label}</button>`;
+  const actions = fr ? btn('chat', '💬<small>Chat</small>') + btn('call', '📞<small>Call</small>') + btn('video', '📹<small>Video</small>') + btn('nick', '✏️<small>Nickname</small>')
+    : p.relation === 'incoming' ? btn('accept', '✅<small>Accept</small>', 'btn-red') : p.relation === 'outgoing' ? btn('none', '⏳<small>Requested</small>') : btn('add', '＋<small>Add Friend</small>', 'btn-red');
+  const thumbs = (list, attr) => list.map(x => `<button class="pp-thumb" ${attr(x)}>${x.thumb || x.photo ? `<img src="${x.thumb || x.photo}" alt="">` : '<span>📸</span>'}${x.mine ? '<i>➤ sent</i>' : ''}</button>`).join('');
+  $('#person-body').innerHTML = `
+    <div class="pp-top">${avatarHtml(u, 'xxl')}
+      <h2>${esc(u.name)}</h2>
+      <div class="muted">@${esc(u.username)}${u.nick ? ' · ' + esc(u.realName) : ''}</div>
+      ${p.nickname ? `<div class="pp-nick">✏️ Your nickname for them: <b>${esc(p.nickname)}</b> <small>(only you see it)</small></div>` : ''}
+      ${fr ? `<div class="pp-badges"><span>🤝 Friends${since ? ' since ' + since : ''}</span>${p.streak ? `<span>🔥 ${p.streak}</span>` : ''}<span>⭐ ${p.score} Peak score</span></div>` : ''}
+    </div>
+    <div class="pp-actions">${actions}</div>
+    ${p.limited ? `<div class="pp-locked">🔒 ${p.relation === 'outgoing' ? 'Friend request sent.' : 'Not friends yet.'} Add each other as friends to see their stories, Peaks and game stats.</div>` : `
+      ${p.mutual.length ? `<div class="section-title dark">${p.mutual.length} mutual friend${p.mutual.length === 1 ? '' : 's'}</div><div class="pp-mutual">${p.mutual.map(m => `<div>${avatarHtml(m)}<small>${esc(m.name)}</small></div>`).join('')}</div>` : ''}
+      ${p.stories.length ? `<div class="section-title dark">Story</div><div class="pp-thumbs">${thumbs(p.stories, () => 'data-ppstory="1"')}</div>` : ''}
+      <div class="section-title dark">Peaks between you</div>
+      ${p.peaks.length ? `<div class="pp-thumbs">${thumbs(p.peaks, x => `data-pppeak="${x.id}"`)}</div>` : '<div class="muted pp-empty">No saved Peaks yet. Peaks with Allow replay stay here after they\'re opened.</div>'}
+      <div class="section-title dark">Games</div>
+      <div class="pp-stats"><div><b>${p.stats.hideSeek.hides}</b><small>hid</small></div><div><b>${p.stats.hideSeek.finds}</b><small>found</small></div><div><b>${p.stats.hideSeek.escapes}</b><small>escaped</small></div>
+        <div><b>${p.stats.manhunt.games}</b><small>Manhunts</small></div><div><b>${p.stats.manhunt.tags}</b><small>tags</small></div><div><b>${p.stats.manhunt.survived}</b><small>survived</small></div></div>
+      <button class="btn-glass dark wide danger-text" data-pp="remove">🚫 Remove Friend</button>`}`;
+  const act = {
+    chat: () => { closeSheets(); openThread('dm_' + [S.user.id, u.id].sort().join('_')); },
+    call: () => startCall(u, 'audio'), video: () => startCall(u, 'video'),
+    nick: async () => { await nicknameFlow(u); openPerson(u.id); },
+    add: async () => { try { const r = await api('/api/friends/request', { body: { userId: u.id } }); toast(r.status === 'friends' ? 'You are now friends 🤝' : 'Request sent 👋', 'y'); refreshFriends(); openPerson(u.id); } catch (e) { toast(e.message); } },
+    accept: async () => { try { await api('/api/friends/accept', { body: { userId: u.id } }); toast('You are now friends 🤝', 'y'); refreshFriends(); refreshChats(); openPerson(u.id); } catch (e) { toast(e.message); } },
+    remove: async () => { await removeFriendFlow(u); openPerson(u.id); },
+  };
+  $$('#person-body [data-pp]').forEach(b => b.onclick = () => act[b.dataset.pp]?.());
+  $$('#person-body [data-ppstory]').forEach(b => b.onclick = () => { closeSheets(); openStoryViewer({ user: u, stories: p.stories }); });
+  $$('#person-body [data-pppeak]').forEach(b => b.onclick = () => openSnapHistory(b.dataset.pppeak));
+}
+
+// ---------- Memories: every Peak you've sent ----------
+let MEM = [], memOpen = null;
+$('#cam-memories').onclick = openMemories;
+$('#mem-close').onclick = () => { $('#memories').classList.add('hidden'); if (S.view === 'camera' && !anyOverlayOpen()) startCamera(); };
+async function openMemories() {
+  stopCamera(); $('#memories').classList.remove('hidden'); $('#mem-grid').innerHTML = '<div class="empty">Loading…</div>';
+  try { MEM = (await api('/api/memories')).memories; } catch (e) { $('#mem-grid').innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  renderMemories();
+}
+function renderMemories() {
+  $('#mem-count').textContent = MEM.length ? `${MEM.length} Peak${MEM.length === 1 ? '' : 's'}` : '';
+  if (!MEM.length) { $('#mem-grid').innerHTML = '<div class="empty">No Memories yet.<br>Every Peak you send is saved here, just for you.</div>'; return; }
+  const day = t => { const d = new Date(t), today = new Date(); const y = new Date(Date.now() - 864e5);
+    return d.toDateString() === today.toDateString() ? 'Today' : d.toDateString() === y.toDateString() ? 'Yesterday' : d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', year: d.getFullYear() === today.getFullYear() ? undefined : 'numeric' }); };
+  let html = '', last = '';
+  for (const m of MEM) {
+    const d = day(m.createdAt); if (d !== last) { if (last) html += '</div>'; html += `<div class="mem-day">${d}</div><div class="mem-row">`; last = d; }
+    html += `<button class="mem-cell" data-mem="${m.id}">${m.thumb ? `<img src="${m.thumb}" alt="" loading="lazy">` : '<span>📸</span>'}${m.story ? '<i>Story</i>' : ''}</button>`;
+  }
+  $('#mem-grid').innerHTML = html + '</div>';
+  $$('#mem-grid [data-mem]').forEach(b => b.onclick = () => viewMemory(b.dataset.mem));
+}
+async function viewMemory(id) {
+  try {
+    const m = await api('/api/memories/' + id); memOpen = m;
+    $('#mem-img').src = m.image;
+    $('#mem-when').innerHTML = `<b>${new Date(m.createdAt).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}</b> <small>${fmtTime(m.createdAt)}${m.sentTo ? ` · sent to ${m.sentTo}` : ''}${m.story ? ' · My Story' : ''}</small>`;
+    $('#mem-viewer').classList.remove('hidden');
+  } catch (e) { toast(e.message); }
+}
+$('#mem-x').onclick = () => { $('#mem-viewer').classList.add('hidden'); $('#mem-img').src = ''; };
+$('#mem-del').onclick = async () => {
+  if (!memOpen || !await askConfirm('Delete this Memory?', 'It is removed from your Memories. Copies you already sent stay in those chats.', 'Delete Memory')) return;
+  try { await api('/api/memories/' + memOpen.id, { method: 'DELETE' }); MEM = MEM.filter(x => x.id !== memOpen.id); $('#mem-x').onclick(); renderMemories(); toast('Memory deleted 🗑', 'y'); } catch (e) { toast(e.message); }
+};
