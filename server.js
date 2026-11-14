@@ -153,6 +153,7 @@ function leaderboard(groupId) {
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { maxHttpBufferSize: 1e6 });
+app.set('trust proxy', 1); // Render terminates TLS in front of us; req.ip = real client
 app.use(express.json({ limit: '200kb' }));
 // PWA files: correct manifest type, and never let browsers cache an old service worker
 app.get('/manifest.json', (req, res) => { res.type('application/manifest+json'); res.set('Cache-Control', 'no-cache'); res.sendFile(path.join(__dirname, 'public', 'manifest.json')); });
@@ -172,12 +173,50 @@ const upload = multer({
   fileFilter: (req, file, cb) => cb(null, /^image\//.test(file.mimetype)),
 });
 
+// ---------- accounts: scrypt password hashes + random session tokens (only their SHA-256 is stored) ----------
+db.sessions ||= {};
+const sha = t => crypto.createHash('sha256').update(String(t)).digest('hex');
+const SCRYPT = { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
+function hashPassword(pw) {
+  const salt = crypto.randomBytes(16);
+  const h = crypto.scryptSync(String(pw), salt, 32, SCRYPT);
+  return `scrypt$${salt.toString('hex')}$${h.toString('hex')}`;
+}
+function checkPassword(pw, stored) {
+  if (!stored || !stored.startsWith('scrypt$')) return false;
+  const [, salt, hex] = stored.split('$');
+  const h = crypto.scryptSync(String(pw), Buffer.from(salt, 'hex'), 32, SCRYPT);
+  return crypto.timingSafeEqual(h, Buffer.from(hex, 'hex'));
+}
+const pwError = pw => (typeof pw !== 'string' || pw.length < 6 ? 'Password must be at least 6 characters' : pw.length > 200 ? 'Password is too long' : null);
+function newSession(u) {
+  const tok = crypto.randomBytes(32).toString('base64url');
+  db.sessions[sha(tok)] = { uid: u.id, createdAt: now() };
+  return tok;
+}
+function userByToken(tok) {
+  if (!tok || typeof tok !== 'string') return null;
+  const s = db.sessions[sha(tok)];
+  if (s && db.users[s.uid]) return db.users[s.uid];
+  // accounts made before passwords existed keep their device token until they set a password
+  return Object.values(db.users).find(x => x.token && !x.passHash && x.token === tok) || null;
+}
 function auth(req, res, next) {
   const tok = req.get('x-token') || req.query.token;
-  const u = Object.values(db.users).find(x => x.token === tok);
+  const u = userByToken(tok);
   if (!u) return res.status(401).json({ error: 'Sign in first' });
-  req.user = u; next();
+  req.user = u; req.token = tok; next();
 }
+// light brute-force protection: 8 failed logins per username+IP per 15 min
+const loginFails = new Map();
+const failKey = (req, username) => `${req.ip}|${username}`;
+function loginBlocked(key) {
+  const f = loginFails.get(key); if (!f) return false;
+  if (Date.now() - f.first > 15 * 60e3) { loginFails.delete(key); return false; }
+  return f.count >= 8;
+}
+function noteFail(key) { const f = loginFails.get(key); if (!f || Date.now() - f.first > 15 * 60e3) loginFails.set(key, { first: Date.now(), count: 1 }); else f.count++; }
+setInterval(() => { for (const [k, f] of loginFails) if (Date.now() - f.first > 15 * 60e3) loginFails.delete(k); }, 60e3).unref();
 function member(req, res, next) {
   const g = db.groups[req.params.gid || req.body.groupId];
   if (!g) return res.status(404).json({ error: 'Group not found' });
@@ -208,10 +247,10 @@ function broadcastHide(h) {
 }
 
 const COLORS = ['#FF3B5C', '#00C2FF', '#9B5CFF', '#00D27A', '#FF8A00', '#FF4FD8', '#1E90FF'];
-// sign in: just a display name. Returns a token stored on the device.
 app.post('/api/signup', (req, res) => {
   const name = String(req.body.name || '').trim().slice(0, 24);
   if (name.length < 2) return bad(res, 'Pick a name with at least 2 characters');
+  const pe = pwError(req.body.password); if (pe) return bad(res, pe);
   let username = String(req.body.username || '').trim().toLowerCase().replace(/^@/, '');
   if (username) {
     if (!/^[a-z0-9_.]{3,20}$/.test(username)) return bad(res, 'Usernames are 3-20 letters, numbers, _ or .');
@@ -220,9 +259,35 @@ app.post('/api/signup', (req, res) => {
     const base = name.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 14) || 'player';
     do { username = base + crypto.randomInt(100, 9999); } while (Object.values(db.users).some(x => x.username === username));
   }
-  const u = { id: id(), name, username, token: id(16), color: COLORS[crypto.randomInt(COLORS.length)], shareLocation: false, createdAt: now() };
-  db.users[u.id] = u; save();
-  res.json({ user: { ...publicUser(u), shareLocation: false }, token: u.token });
+  const u = { id: id(), name, username, passHash: hashPassword(req.body.password), color: COLORS[crypto.randomInt(COLORS.length)], shareLocation: false, createdAt: now() };
+  db.users[u.id] = u; const token = newSession(u); save();
+  res.json({ user: { ...publicUser(u), shareLocation: false }, token });
+});
+app.post('/api/login', (req, res) => {
+  const username = String(req.body.username || '').trim().toLowerCase().replace(/^@/, '');
+  const key = failKey(req, username);
+  if (loginBlocked(key)) return res.status(429).json({ error: 'Too many tries. Wait 15 minutes and try again.' });
+  const u = Object.values(db.users).find(x => x.username === username);
+  if (u && !u.passHash) return res.status(403).json({ error: 'This account has no password yet. Open PeekaSnap on the device you signed up on and it will ask you to set one.', needsPassword: true });
+  if (!u || !checkPassword(req.body.password || '', u.passHash)) { noteFail(key); return res.status(401).json({ error: 'Wrong username or password' }); }
+  loginFails.delete(key);
+  const token = newSession(u); save();
+  res.json({ user: { ...publicUser(u), shareLocation: !!u.shareLocation }, token });
+});
+app.post('/api/logout', auth, (req, res) => { delete db.sessions[sha(req.token)]; save(); res.json({ ok: true }); });
+// set a password (old accounts) or change it (needs the current one); signs out every other device
+app.post('/api/me/password', auth, (req, res) => {
+  const u = req.user;
+  if (u.passHash) {
+    const key = failKey(req, 'pw:' + u.id);
+    if (loginBlocked(key)) return res.status(429).json({ error: 'Too many tries. Wait 15 minutes and try again.' });
+    if (!checkPassword(req.body.current || '', u.passHash)) { noteFail(key); return res.status(401).json({ error: 'Current password is wrong' }); }
+  }
+  const pe = pwError(req.body.password); if (pe) return bad(res, pe);
+  u.passHash = hashPassword(req.body.password); delete u.token;
+  for (const [k, sess] of Object.entries(db.sessions)) if (sess.uid === u.id) delete db.sessions[k];
+  const token = newSession(u); save();
+  res.json({ ok: true, token });
 });
 app.get('/api/push/key', (req, res) => res.json({ publicKey: vapid.publicKey }));
 app.post('/api/push/subscribe', auth, (req, res) => {
@@ -242,7 +307,7 @@ app.post('/api/push/unsubscribe', auth, (req, res) => {
 app.get('/api/me', auth, (req, res) => {
   const groups = Object.values(db.groups).filter(g => g.members.includes(req.user.id))
     .map(g => ({ id: g.id, name: g.name, code: g.code, emoji: g.emoji, memberCount: g.members.length }));
-  res.json({ user: { ...publicUser(req.user), shareLocation: !!req.user.shareLocation }, groups });
+  res.json({ user: { ...publicUser(req.user), shareLocation: !!req.user.shareLocation, needsPassword: !req.user.passHash }, groups });
 });
 app.post('/api/groups', auth, (req, res) => {
   const name = String(req.body.name || '').trim().slice(0, 32);
@@ -291,7 +356,7 @@ app.post('/api/groups/:gid/hides', auth, member, upload.single('photo'), (req, r
   const b = req.body;
   const object = String(b.object || '').trim().slice(0, 60);
   if (!object) return bad(res, 'What object are you hiding?');
-  if (!req.file) return bad(res, 'Snap a photo of the object');
+  if (!req.file) return bad(res, 'Take a photo of the object');
   const center = { lat: b.centerLat, lng: b.centerLng }, spot = { lat: b.spotLat, lng: b.spotLng };
   if (!validPoint(center)) return bad(res, 'Set the play area center');
   if (!validPoint(spot)) return bad(res, 'Set where the object is hidden');
@@ -348,7 +413,7 @@ app.post('/api/hides/:hid/find', auth, hideAccess, upload.single('photo'), (req,
   const h = req.hide;
   if (h.hiderId === req.user.id) return bad(res, "You can't find your own object");
   if (h.status !== 'active') return bad(res, 'This round is over');
-  if (!req.file) return bad(res, 'Snap a photo of the object you found');
+  if (!req.file) return bad(res, 'Take a photo of the object you found');
   const photo = '/uploads/' + req.file.filename;
   const loc = { lat: req.body.lat, lng: req.body.lng };
   const d = validPoint(loc) ? distanceM(pt(loc), h.spot) : null;
@@ -395,7 +460,7 @@ app.post('/api/hides/:hid/move', auth, hideAccess, upload.single('photo'), (req,
   const oldName = h.object;
   if (object && object !== h.object) { h.object = object; change.renamed = true; change.oldName = oldName; }
   if (req.file) { h.photo = '/uploads/' + req.file.filename; change.newPhoto = true; }
-  if (!change.moved && !change.renamed && !change.newPhoto) return bad(res, 'Nothing changed - drag the spot, rename it, or snap a new photo');
+  if (!change.moved && !change.renamed && !change.newPhoto) return bad(res, 'Nothing changed - drag the spot, rename it, or take a new photo');
   (h.moves ||= []).push(change); h.lastMovePing = h.pings.length;
   if (change.moved) {
     h.movedAtPing = h.pings.length; h.heatChecks = {}; // old hint is stale; fresh hot/cold check
@@ -452,7 +517,7 @@ setInterval(tick, TICK_MS);
 
 // ---------- sockets ----------
 io.use((socket, next) => {
-  const u = Object.values(db.users).find(x => x.token === socket.handshake.auth?.token);
+  const u = userByToken(socket.handshake.auth?.token);
   if (!u) return next(new Error('unauthorized'));
   socket.data.userId = u.id; next();
 });

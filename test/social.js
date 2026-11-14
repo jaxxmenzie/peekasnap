@@ -5,12 +5,12 @@ const { startServer, reporter, once } = require('./helpers');
 (async () => {
   const S = await startServer(3995); const { api, advance } = S; const { ok, done } = reporter();
   try {
-    const a = await api('/api/signup', { body: { name: 'Ava', username: 'ava_snaps' } });
-    const b = await api('/api/signup', { body: { name: 'Ben', username: 'ben.b' } });
-    const c = await api('/api/signup', { body: { name: 'Cat' } });
+    const a = await api('/api/signup', { body: { name: 'Ava', username: 'ava_snaps', password: 'secret123' } });
+    const b = await api('/api/signup', { body: { name: 'Ben', username: 'ben.b', password: 'secret123' } });
+    const c = await api('/api/signup', { body: { name: 'Cat', password: 'secret123' } });
     ok(a.user.username === 'ava_snaps' && /^cat\d+$/.test(c.user.username), `sign up with a username (auto-generated when blank: @${c.user.username})`);
-    ok((await api('/api/signup', { body: { name: 'Ava 2', username: 'AVA_SNAPS' } })).status === 409, 'usernames are unique (case-insensitive)');
-    ok((await api('/api/signup', { body: { name: 'X', username: 'a b' } })).status === 400, 'invalid username rejected');
+    ok((await api('/api/signup', { body: { name: 'Ava 2', username: 'AVA_SNAPS', password: 'secret123' } })).status === 409, 'usernames are unique (case-insensitive)');
+    ok((await api('/api/signup', { body: { name: 'X', username: 'a b', password: 'secret123' } })).status === 400, 'invalid username rejected');
     ok(a.user.shareLocation === false, 'new users start in ghost mode (location sharing off)');
 
     // friends
@@ -148,8 +148,25 @@ const { startServer, reporter, once } = require('./helpers');
     await api(`/api/groups/${g.id}/leave`, { token: c.token, body: {} });
     ok(!(await api('/api/chats', { token: c.token })).chats.some(x => x.chatId === g.id) && (await api(`/api/chats/${g.id}`, { token: c.token })).status === 404, 'leaving the group removes its chat for good');
 
+    // remove friend: both sides, gone from Send To / map / stories, chat stays read-only
+    await api('/api/me', { token: a.token, method: 'PATCH', body: { shareLocation: true } });
+    await api('/api/me/location', { token: a.token, body: { lat: 37.77, lng: -122.48 } });
+    await api('/api/stories', { token: a.token, form: { photo: 1 } });
+    ok((await api('/api/map', { token: b.token })).friends.length === 1 && (await api('/api/stories', { token: b.token })).friends.some(f => f.user.id === a.user.id), 'before: Ben sees Ava on the map and in stories');
+    const remEvt = once(sa, 'friends', 4000, d => d.type === 'removed'), goneEvt = once(sa, 'friend-loc', 4000, d => d.gone && d.userId === b.user.id);
     await api('/api/friends/remove', { token: b.token, body: { userId: a.user.id } });
-    ok((await api('/api/friends', { token: a.token })).friends.length === 0, 'unfriend works');
+    ok((await remEvt).type === 'removed' && (await goneEvt).gone, 'Ava gets realtime "removed" + map-removal events');
+    ok((await api('/api/friends', { token: a.token })).friends.length === 0 && (await api('/api/friends', { token: b.token })).friends.length === 0, 'Remove Friend removes both sides');
+    ok((await api('/api/map', { token: b.token })).friends.length === 0, 'removed friend disappears from the Peak Map');
+    ok(!(await api('/api/stories', { token: b.token })).friends.some(f => f.user.id === a.user.id), 'removed friend disappears from Stories');
+    ok((await api('/api/snaps', { token: b.token, form: { photo: 1, to: [a.user.id], timer: 3 } })).status === 403, 'removed friend can no longer be sent Peaks (gone from Send To)');
+    const exChat = (await api('/api/chats', { token: b.token })).chats.find(x => x.chatId === dm);
+    ok(exChat && exChat.notFriends && (await api(`/api/chats/${dm}`, { token: b.token })).messages.length > 0, 'existing chat stays (marked not-friends) with its history');
+    ok((await api(`/api/chats/${dm}`, { token: b.token })).chat.canSend === false && (await api(`/api/chats/${dm}/messages`, { token: b.token, form: { text: 'hey' } })).status === 403, 'chat is read-only after removal');
+    await api(`/api/chats/${dm}`, { token: b.token, method: 'DELETE' });
+    ok(!(await api('/api/chats', { token: b.token })).chats.some(x => x.chatId === dm), 'Ben can still delete that old chat');
+    await api('/api/friends/request', { token: a.token, body: { username: 'ben.b' } }); await api('/api/friends/accept', { token: b.token, body: { userId: a.user.id } });
+    ok((await api('/api/friends', { token: a.token })).friends.length === 1, 'they can add each other again later');
     sa.close(); sb.close();
   } catch (e) { console.error(e); ok(false, 'exception: ' + e.message); }
   S.kill(); process.exit(done() ? 1 : 0);

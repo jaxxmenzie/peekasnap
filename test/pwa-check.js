@@ -15,7 +15,7 @@ let pass = 0, fail = 0; const ok = (c, m) => { c ? pass++ : fail++; console.log(
     srv = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, PORT: 3996, DATA_DIR: tmp + '/d', UPLOAD_DIR: tmp + '/u' }, stdio: 'ignore' });
     for (let i = 0; i < 40; i++) { try { await fetch(BASE + '/healthz'); break; } catch { await wait(150); } }
   }
-  const signup = async name => (await (await fetch(BASE + '/api/signup', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) })).json());
+  const signup = async name => (await (await fetch(BASE + '/api/signup', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, password: 'secret123' }) })).json());
   const u = await signup('PWA Pat');
   const g = await (await fetch(BASE + '/api/groups', { method: 'POST', headers: { 'content-type': 'application/json', 'x-token': u.token }, body: JSON.stringify({ name: 'Park Crew', emoji: '🌳' }) })).json();
   const b = await chromium.launch({ executablePath: CHROME, args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'] });

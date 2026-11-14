@@ -24,8 +24,8 @@ const NEAR = { lat: SPOT.lat + 0.00009, lng: SPOT.lng }, FAR = { lat: SPOT.lat +
 
 (async () => {
   for (let i = 0; i < 40; i++) { try { await fetch(BASE + '/healthz'); break; } catch { await wait(150); } }
-  const a = await api('/api/signup', { body: { name: 'Hider Hana' } });
-  const b = await api('/api/signup', { body: { name: 'Seeker Sam' } });
+  const a = await api('/api/signup', { body: { name: 'Hider Hana', password: 'secret123' } });
+  const b = await api('/api/signup', { body: { name: 'Seeker Sam', password: 'secret123' } });
   ok(a.token && b.token, 'sign up two players with just a name');
   const g = (await api('/api/groups', { token: a.token, body: { name: 'Park Crew', emoji: '🌳' } })).group;
   ok(g && /^[A-Z0-9]{6}$/.test(g.code), `create group -> join code ${g.code}`);
@@ -114,7 +114,7 @@ const NEAR = { lat: SPOT.lat + 0.00009, lng: SPOT.lng }, FAR = { lat: SPOT.lat +
   srv2 = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, PORT: 3997, DATA_DIR: dir + '/d2', UPLOAD_DIR: dir + '/u2', MIN_PING_DELAY_MS: '' }, stdio: 'ignore' });
   for (let i = 0; i < 40; i++) { try { await fetch('http://localhost:3997/healthz'); break; } catch { await wait(150); } }
   const cfg = await (await fetch('http://localhost:3997/api/config')).json();
-  const u = await (await fetch('http://localhost:3997/api/signup', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Default Dee' }) })).json();
+  const u = await (await fetch('http://localhost:3997/api/signup', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Default Dee', password: 'secret123' }) })).json();
   const gg = await (await fetch('http://localhost:3997/api/groups', { method: 'POST', headers: { 'content-type': 'application/json', 'x-token': u.token }, body: JSON.stringify({ name: 'D' }) })).json();
   const fd = new FormData(); fd.append('photo', new Blob([JPG], { type: 'image/jpeg' }), 'p.jpg');
   Object.entries({ object: 'Cup', centerLat: CENTER.lat, centerLng: CENTER.lng, radius: 400, spotLat: SPOT.lat, spotLng: SPOT.lng, firstPingAt: Date.now() + 60000, intervalMin: 1, pingCount: 2 }).forEach(([k, v]) => fd.append(k, String(v)));

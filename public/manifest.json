@@ -1,8 +1,8 @@
 {
   "id": "/",
-  "name": "PeekaSnap - Photo Hide & Seek",
+  "name": "PeekaSnap - Peaks, chat & games",
   "short_name": "PeekaSnap",
-  "description": "Snap an object, hide it, and make your friends hunt for it. Timed pings, groups and chat.",
+  "description": "Send disappearing Peaks to friends, chat, share Stories, and play Hide & Seek and Manhunt.",
   "start_url": "/?source=homescreen",
   "scope": "/",
   "display": "standalone",
@@ -26,8 +26,8 @@
     { "src": "/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
   ],
   "shortcuts": [
-    { "name": "Hide something", "short_name": "Camera", "url": "/?source=shortcut#camera", "icons": [{ "src": "/icons/icon-96.png", "sizes": "96x96" }] },
-    { "name": "Map", "url": "/?source=shortcut#map", "icons": [{ "src": "/icons/icon-96.png", "sizes": "96x96" }] },
-    { "name": "Group chat", "short_name": "Chat", "url": "/?source=shortcut#chat", "icons": [{ "src": "/icons/icon-96.png", "sizes": "96x96" }] }
+    { "name": "Take a Peak", "short_name": "Camera", "url": "/?source=shortcut#camera", "icons": [{ "src": "/icons/icon-96.png", "sizes": "96x96" }] },
+    { "name": "Peak Map", "short_name": "Map", "url": "/?source=shortcut#map", "icons": [{ "src": "/icons/icon-96.png", "sizes": "96x96" }] },
+    { "name": "Chat", "short_name": "Chat", "url": "/?source=shortcut#chat", "icons": [{ "src": "/icons/icon-96.png", "sizes": "96x96" }] }
   ]
 }

@@ -7,7 +7,7 @@ const off = (m, dLatM, dLngM = 0) => ({ lat: m.lat + dLatM / 111320, lng: m.lng 
 (async () => {
   const S = await startServer(3993); const { api, advance } = S; const { ok, done } = reporter();
   try {
-    const su = async (name) => api('/api/signup', { body: { name } });
+    const su = async (name) => api('/api/signup', { body: { name, password: 'secret123' } });
     const [host, r1, r2, hx, outsider] = await Promise.all(['Hana', 'Rio', 'Remy', 'Hex', 'Otto'].map(su));
     const g = (await api('/api/groups', { token: host.token, body: { name: 'Hunt Club' } })).group;
     for (const u of [r1, r2, hx]) await api('/api/groups/join', { token: u.token, body: { code: g.code } });

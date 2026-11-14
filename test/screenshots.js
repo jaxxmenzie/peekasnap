@@ -31,7 +31,7 @@ const near = (dLat, dLng) => ({ lat: C.lat + dLat, lng: C.lng + dLng });
   // 2) demo server + seed data
   const srv = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, PORT, DATA_DIR: tmp + '/data', UPLOAD_DIR: tmp + '/up', TICK_MS: 300, MIN_PING_DELAY_MS: 1000, ALLOW_TEST_CLOCK: '1' }, stdio: ['ignore', 'ignore', 'inherit'] });
   for (let i = 0; i < 40; i++) { try { await fetch(BASE + '/healthz'); break; } catch { await wait(150); } }
-  const su = (name, username) => api('/api/signup', null, { name, username });
+  const su = (name, username) => api('/api/signup', null, { name, username, password: 'secret123' });
   const jaxx = await su('Jaxx', 'jaxx'), maya = await su('Maya', 'maya.b'), leo = await su('Leo', 'leo_skates'), zoe = await su('Zoe', 'zoe');
   const friend = async (a, b) => { await api('/api/friends/request', a.token, { username: b.user.username }); await api('/api/friends/accept', b.token, { userId: a.user.id }); };
   await friend(jaxx, maya); await friend(jaxx, leo); await friend(maya, leo); await friend(zoe, maya);
@@ -72,7 +72,8 @@ const near = (dLat, dLng) => ({ lat: C.lat + dLat, lng: C.lng + dLng });
   };
 
   const anon = await (await browser.newContext(phone)).newPage();
-  await anon.goto(BASE); await anon.fill('#signup-name', 'Jaxx'); await anon.fill('#signup-username', 'jaxx_m'); await wait(500); await shot(anon, '01-sign-in.png');
+  await anon.goto(BASE); await anon.fill('#signup-name', 'Jaxx'); await anon.fill('#signup-username', 'jaxx_m'); await anon.fill('#signup-password', 'secret123'); await wait(500); await shot(anon, '01-sign-in.png');
+  await anon.click('#tab-login'); await anon.fill('#login-username', 'jaxx'); await anon.fill('#login-password', 'secret123'); await wait(400); await shot(anon, '28-log-in.png');
 
   const page = await login(jaxx);
   await shot(page, '02-camera-home.png');
@@ -84,7 +85,7 @@ const near = (dLat, dLng) => ({ lat: C.lat + dLat, lng: C.lng + dLng });
   for (let i = 0; i <= 20; i++) await page.mouse.move(st.x + 60 + i * 6, st.y + 200 + Math.sin(i / 3) * 30);
   await page.mouse.up(); await page.click('#ed-pen');
   await page.click('#ed-sticker'); await page.click('#ed-stickers button:nth-child(2)'); await wait(500);
-  await shot(page, '03-snap-editor.png');
+  await shot(page, '03-peak-editor.png');
   await page.click('#ed-send'); await wait(600);
   await page.locator(`label.send-row:has(input[data-to="${maya.user.id}"])`).click();
   await page.locator('label.story-row').click();
@@ -92,7 +93,7 @@ const near = (dLat, dLng) => ({ lat: C.lat + dLat, lng: C.lng + dLng });
   await page.click('#send-go'); await wait(1200);
   // chat
   await page.click('.nav-btn[data-view=chat]'); await wait(1000); await shot(page, '05-chat-list.png');
-  await page.click(`.chat-row[data-chat="${dm(jaxx, maya)}"]`); await wait(1300); await shot(page, '06-snap-viewer.png'); // tapping a New Snap opens it (Snapchat-style)
+  await page.click(`.chat-row[data-chat="${dm(jaxx, maya)}"]`); await wait(1300); await shot(page, '06-peak-viewer.png'); // tapping a New Snap opens it (Snapchat-style)
   await page.click('#snap-viewer'); await wait(500);
   await page.click(`.chat-row[data-chat="${dm(jaxx, maya)}"]`); await wait(900);
   await api(`/api/chats/${dm(jaxx, maya)}/messages`, maya.token, { text: 'omw!! 🏃‍♀️' });
@@ -107,7 +108,7 @@ const near = (dLat, dLng) => ({ lat: C.lat + dLat, lng: C.lng + dLng });
   await page.click('#sv-close');
   // map
   await page.click('.nav-btn[data-view=map]'); await page.waitForLoadState('networkidle'); await wait(1500);
-  await page.evaluate(() => map.fitBounds([[37.7724, -122.4902], [37.7674, -122.4832]])); await wait(1800); await shot(page, '10-snap-map.png');
+  await page.evaluate(() => map.fitBounds([[37.7724, -122.4902], [37.7674, -122.4832]])); await wait(1800); await shot(page, '10-peak-map.png');
   // friends + profile
   await page.click('#add-friend-btn'); await wait(400); await page.fill('#friend-search', 'zo'); await wait(900); await shot(page, '11-add-friends.png');
   await page.click('#friends-sheet [data-close]');
@@ -164,6 +165,17 @@ const near = (dLat, dLng) => ({ lat: C.lat + dLat, lng: C.lng + dLng });
   await page.locator('#thread-feed .mrow', { hasText: 'skate park, come thru' }).click({ button: 'right' });
   await page.waitForSelector('#ask-sheet:not(.hidden)'); await wait(500); await shot(page, '25-unsend-message-confirm.png');
   await page.click('#ask-actions [data-act="0"]'); await wait(800);
+
+  // 6) remove a friend + change password
+  await page.click('#thread-back').catch(() => {}); await wait(300);
+  await page.click('#add-friend-btn'); await wait(700);
+  await page.click(`#friend-list [data-fmenu="${leo.user.id}"]`); await wait(400);
+  await page.click('#ask-actions [data-act="1"]'); await page.waitForSelector('#ask-sheet:not(.hidden)'); await wait(500); await shot(page, '29-remove-friend-confirm.png');
+  await page.click('#ask-actions [data-act="0"]'); await wait(3800);
+  await page.click('#friends-sheet [data-close]').catch(() => {});
+  await page.click('#me-btn'); await wait(400); await page.click('#password-btn'); await wait(300);
+  await page.fill('#pw-current', 'secret123'); await page.fill('#pw-new', 'newpass99'); await page.fill('#pw-confirm', 'newpass99'); await wait(300);
+  await shot(page, '30-change-password.png');
 
   msock.close(); await browser.close(); srv.kill(); process.exit(0);
 })().catch(e => { console.error(e); process.exit(1); });

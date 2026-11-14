@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
 <meta name="theme-color" content="#000000">
 <meta name="color-scheme" content="dark">
-<meta name="description" content="Snap an object, hide it, and make your friends hunt for it.">
+<meta name="description" content="Send disappearing Peaks, chat, and play Hide &amp; Seek and Manhunt with your friends.">
 <!-- Home Screen / installed app -->
 <link rel="manifest" href="/manifest.json">
 <meta name="mobile-web-app-capable" content="yes">
@@ -30,7 +30,7 @@
 <link rel="apple-touch-startup-image" media="(device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="/splash/splash-828x1792.png">
 <link rel="apple-touch-startup-image" media="(device-width: 414px) and (device-height: 736px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="/splash/splash-1242x2208.png">
 <link rel="apple-touch-startup-image" media="(device-width: 375px) and (device-height: 667px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="/splash/splash-750x1334.png">
-<title>PeekaSnap · Photo hide &amp; seek</title>
+<title>PeekaSnap · Peaks, chat &amp; games</title>
 <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
 <link rel="stylesheet" href="/styles.css">
 </head>
@@ -40,13 +40,26 @@
 <section id="onboard" class="screen onboard hidden">
   <img class="logo-img" src="/icons/icon-192.png" alt="">
   <h1>PeekaSnap</h1>
-  <p class="tag">Snap your friends. Then hunt them down.</p>
+  <p class="tag">Peak at your friends. Then hunt them down.</p>
+  <div class="auth-tabs"><button id="tab-signup" class="on" type="button">Sign up</button><button id="tab-login" type="button">Log in</button></div>
   <form id="signup-form" class="onboard-form">
     <input id="signup-name" maxlength="24" placeholder="Display name" autocomplete="nickname" required>
-    <div class="at-input"><span>@</span><input id="signup-username" maxlength="20" placeholder="username" autocapitalize="none" autocomplete="username" spellcheck="false"></div>
-    <button class="btn-dark" type="submit">Let's go</button>
+    <div class="at-input"><span>@</span><input id="signup-username" maxlength="20" placeholder="username" autocapitalize="none" autocomplete="username" spellcheck="false" required></div>
+    <input id="signup-password" type="password" minlength="6" maxlength="200" placeholder="Password (6+ characters)" autocomplete="new-password" required>
+    <button class="btn-dark" type="submit">Sign up</button>
   </form>
-  <p class="fine">No password needed. Friends add you by your username.</p>
+  <form id="login-form" class="onboard-form hidden">
+    <div class="at-input"><span>@</span><input id="login-username" maxlength="20" placeholder="username" autocapitalize="none" autocomplete="username" spellcheck="false" required></div>
+    <input id="login-password" type="password" maxlength="200" placeholder="Password" autocomplete="current-password" required>
+    <button class="btn-dark" type="submit">Log in</button>
+  </form>
+  <form id="setpw-form" class="onboard-form hidden">
+    <p class="tag">PeekaSnap now uses passwords. Set one to keep your account <b id="setpw-user"></b>.</p>
+    <input id="setpw-password" type="password" minlength="6" maxlength="200" placeholder="New password (6+ characters)" autocomplete="new-password" required>
+    <input id="setpw-confirm" type="password" minlength="6" maxlength="200" placeholder="Type it again" autocomplete="new-password" required>
+    <button class="btn-dark" type="submit">Save password</button>
+  </form>
+  <p class="fine" id="auth-fine">Friends add you by your username.</p>
 </section>
 
 <!-- ============ MAIN APP ============ -->
@@ -61,12 +74,12 @@
   <!-- CAMERA (home) -->
   <div id="view-camera" class="view">
     <video id="cam-video" autoplay playsinline muted></video>
-    <div id="cam-fallback" class="cam-fallback hidden"><div class="big-emoji">📸</div><p>Tap the shutter to take a Snap</p></div>
-    <div id="hide-mode-pill" class="hide-mode-pill hidden">🫣 Snap the object you want to hide <button id="hide-mode-x">✕</button></div>
+    <div id="cam-fallback" class="cam-fallback hidden"><div class="big-emoji">📸</div><p>Tap the shutter to take a Peak</p></div>
+    <div id="hide-mode-pill" class="hide-mode-pill hidden">🫣 Take a Peak of the object you want to hide <button id="hide-mode-x">✕</button></div>
     <div class="cam-controls">
       <button id="cam-upload" class="round-btn glass" title="Camera roll">🖼️</button>
-      <button id="shutter" class="shutter" aria-label="Take Snap"></button>
-      <button id="cam-inbox" class="round-btn glass" title="New snaps">📩<i id="inbox-count" class="count hidden"></i></button>
+      <button id="shutter" class="shutter" aria-label="Take Peak"></button>
+      <button id="cam-inbox" class="round-btn glass" title="New Peaks">📩<i id="inbox-count" class="count hidden"></i></button>
     </div>
     <input id="file-capture" type="file" accept="image/*" capture="environment" hidden>
     <input id="file-pick" type="file" accept="image/*" hidden>
@@ -106,7 +119,7 @@
     <div class="list-head"><h2>Play</h2><button id="group-pill" class="pill small">👥 <span id="group-name">Pick a group</span> ▾</button></div>
     <div class="play-scroll">
       <div class="mode-cards">
-        <button id="mode-hide" class="mode-card hide"><span class="mode-emoji">🫣</span><b>Hide &amp; Seek</b><small>Snap an object, hide it, timed pings</small></button>
+        <button id="mode-hide" class="mode-card hide"><span class="mode-emoji">🫣</span><b>Hide &amp; Seek</b><small>Hide an object, timed pings</small></button>
         <button id="mode-hunt" class="mode-card hunt"><span class="mode-emoji">🏃</span><b>Manhunt</b><small>Hunters vs runners, live map pings</small></button>
       </div>
       <div id="play-hunt-card"></div>
@@ -145,7 +158,7 @@
   <div class="ed-bottom">
     <button id="ed-story" class="btn-glass">＋ Story</button>
     <button id="ed-hide" class="btn-glass">🫣 Hide</button>
-    <button id="ed-send" class="btn-red send-to">Send To ➤</button>
+    <button id="ed-send" class="btn-red send-to">Send Peak ➤</button>
   </div>
 </section>
 
@@ -180,6 +193,7 @@
   </div>
   <div id="thread-feed" class="chat-feed"></div>
   <div id="typing" class="typing hidden"><span></span><span></span><span></span> <em id="typing-who"></em></div>
+  <div id="thread-locked" class="thread-locked hidden">You're no longer friends. Add them again to chat. You can still delete this conversation.</div>
   <form id="thread-form" class="chat-form">
     <button type="button" id="thread-cam" class="round-btn">📷</button>
     <input id="thread-input" placeholder="Send a chat" autocomplete="off" maxlength="1000">
@@ -193,6 +207,17 @@
   <div class="sheet ask"><div class="grab"></div>
     <div class="sheet-body"><h3 id="ask-title"></h3><p id="ask-body" class="muted"></p><div id="ask-actions"></div>
       <button id="ask-cancel" class="btn-glass dark wide">Cancel</button></div></div>
+</section>
+
+<section id="password-sheet" class="sheet-wrap hidden">
+  <div class="sheet"><div class="grab"></div><div class="sheet-head"><h2>Change password</h2><button class="x" data-close>✕</button></div>
+    <form id="password-form" class="sheet-body">
+      <label>Current password</label><input id="pw-current" type="password" autocomplete="current-password" required>
+      <label>New password</label><input id="pw-new" type="password" minlength="6" autocomplete="new-password" required>
+      <label>New password again</label><input id="pw-confirm" type="password" minlength="6" autocomplete="new-password" required>
+      <div class="hint-text">Changing it logs you out on your other devices.</div>
+      <button class="btn-red wide" type="submit">Save new password</button>
+    </form></div>
 </section>
 
 <!-- ============ FRIENDS ============ -->
@@ -219,10 +244,11 @@
       <div class="profile-top"><div id="profile-av" class="avatar xl"></div><div><b id="profile-name"></b><div id="profile-user" class="muted"></div></div></div>
       <button id="share-username" class="btn-glass dark wide">🔗 Share my username</button>
       <div class="setting"><div class="grow"><b>👻 Ghost Mode</b><div class="muted">When on, friends can't see you on the Map. Location is only shared during an active Manhunt.</div></div><label class="switch"><input type="checkbox" id="ghost-switch" checked><i></i></label></div>
+      <button id="password-btn" class="btn-glass dark wide">🔒 Change password</button>
       <button id="notif-btn" class="btn-glass dark wide">🔔 Turn on alerts</button>
       <button id="install-btn" class="btn-glass dark wide hidden">📲 Add to Home Screen</button>
       <button id="groups-btn" class="btn-glass dark wide">👥 Groups</button>
-      <button id="signout-btn" class="btn-glass dark wide">Sign out on this device</button>
+      <button id="signout-btn" class="btn-glass dark wide">Log out on this device</button>
     </div>
   </div>
 </section>
