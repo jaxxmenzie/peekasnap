@@ -99,7 +99,7 @@ function heatBand(d) {
 }
 
 // ---------- serialization (never leak the hidden spot to seekers) ----------
-const publicUser = u => u && { id: u.id, name: u.name, username: u.username, color: u.color };
+const publicUser = u => u && { id: u.id, name: u.name, username: u.username, color: u.color, avatar: u.avatar || null };
 function publicHide(h, viewerId) {
   const isHider = h.hiderId === viewerId;
   const done = h.status !== 'active';
@@ -314,7 +314,7 @@ app.post('/api/push/unsubscribe', auth, (req, res) => {
 app.get('/api/me', auth, (req, res) => {
   const groups = Object.values(db.groups).filter(g => g.members.includes(req.user.id))
     .map(g => ({ id: g.id, name: g.name, code: g.code, emoji: g.emoji, memberCount: g.members.length }));
-  res.json({ user: { ...publicUser(req.user), shareLocation: !!req.user.shareLocation, needsPassword: !req.user.passHash }, groups });
+  res.json({ user: { ...publicUser(req.user), shareLocation: !!req.user.shareLocation, needsPassword: !req.user.passHash }, groups, nicknames: req.user.nicknames || {} });
 });
 app.post('/api/groups', auth, (req, res) => {
   const name = String(req.body.name || '').trim().slice(0, 32);

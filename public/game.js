@@ -83,7 +83,7 @@ setInterval(() => {
 
 function renderBoard() {
   $('#board-list').innerHTML = S.leaderboard.length ? S.leaderboard.map((r, i) => `<div class="board-row"><span class="rank">${['🥇', '🥈', '🥉'][i] || i + 1}</span>
-    <span class="avatar" style="background:${r.user.color}">${esc(r.user.name[0].toUpperCase())}</span>
+    ${avatarHtml(r.user)}
     <span class="grow"><b>${esc(r.user.name)}</b><br><small>${r.finds} found · ${r.hides} hidden · ${r.escapes} escaped</small></span><span class="pts">${r.points}</span></div>`).join('')
     : '<div class="empty">No players yet</div>';
 }
@@ -217,7 +217,7 @@ function renderStory() {
   const h = S.hides.find(x => x.id === openStoryId); if (!h) return closeStory();
   $('#story-img').src = h.photo;
   $('#story-bars').innerHTML = Array.from({ length: h.pingCount }, (_, i) => `<i class="${i < h.pings.length ? 'on' : ''}"></i>`).join('');
-  const a = $('#story-avatar'); a.textContent = h.hider.name[0].toUpperCase(); a.style.background = h.hider.color;
+  setAvatar($('#story-avatar'), h.hider);
   $('#story-hider').textContent = h.isHider ? 'You hid this' : `${h.hider.name} hid this`;
   $('#story-time').textContent = `${fmtTime(h.createdAt)} · area ${h.radius >= 1000 ? (h.radius / 1000).toFixed(1) + ' km' : h.radius + ' m'} · ${h.pings.length}/${h.pingCount} pings${h.moveCount ? ` · moved/renamed ${h.moveCount}×` : ''}${h.hintOutdated && h.status === 'active' ? ' · ⚠️ hint out of date' : ''}`;
   $('#story-object').textContent = h.object;

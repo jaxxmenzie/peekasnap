@@ -6,7 +6,7 @@ const S = {
   token: localStorage.getItem('ps_token'), user: null, groups: [],
   groupId: localStorage.getItem('ps_group'), group: null, hides: [], messages: [], leaderboard: [],
   view: 'camera', snap: null, myLoc: null, socket: null,
-  friends: { friends: [], incoming: [], outgoing: [] }, chats: [], inbox: [], stories: { mine: [], friends: [] },
+  friends: { friends: [], incoming: [], outgoing: [] }, chats: [], nicks: {}, inbox: [], stories: { mine: [], friends: [] },
   thread: null, threadMsgs: [], threadReads: {}, hideMode: false, minPingDelayMs: 5 * 60000,
 };
 const H = { socket: [], groupLoaded: [], view: [], loc: [], message: [] }; // hooks for game.js / hunt.js
@@ -23,8 +23,30 @@ async function api(path, opts = {}) {
   const j = await r.json().catch(() => ({}));
   if (!r.ok && !j.error && r.status >= 500) j.error = 'PeekaSnap had a problem. Try again in a moment.';
   if (!r.ok) { const e = new Error(j.error || 'Something went wrong'); e.status = r.status; e.data = j; throw e; }
-  return j;
+  if (j.nicknames) S.nicks = j.nicknames;
+  return decorate(j);
 }
+
+// ---------- names & avatars ----------
+// Every person object coming from the server ({id, name, username, ...}) gets its display name resolved here:
+// my private nickname for them > their display name > username. The original is kept in .realName.
+function decorate(o) {
+  if (!o || typeof o !== 'object') return o;
+  if (Array.isArray(o)) { o.forEach(decorate); return o; }
+  if (typeof o.username === 'string' && typeof o.id === 'string' && 'name' in o) {
+    if (!('realName' in o)) o.realName = o.name;
+    const nick = o.id !== S.user?.id ? S.nicks[o.id] || null : null;
+    o.nick = nick; o.name = nick || o.realName || o.username;
+  }
+  for (const k in o) if (o[k] && typeof o[k] === 'object') decorate(o[k]);
+  return o;
+}
+const initials = u => { const w = String(u?.name || u?.username || '?').trim().split(/\s+/).filter(Boolean); return ((w[0]?.[0] || '?') + (w.length > 1 ? w[w.length - 1][0] : '')).toUpperCase(); };
+const avInner = u => u?.avatar ? `<img src="${esc(u.avatar)}" alt="" loading="lazy" draggable="false">` : esc(initials(u));
+const AV_RED = '#FF2D46';
+function setAvatar(el, u) { el.innerHTML = avInner(u); el.style.background = u?.avatar ? '#111' : AV_RED; el.classList.toggle('has-pic', !!u?.avatar); }
+const matches = (q, ...xs) => !q || xs.some(x => String(x || '').toLowerCase().includes(q));
+const personMatch = (q, u) => matches(q, u?.name, u?.realName, u?.nick, u?.username, u && '@' + u.username);
 
 // ---------- feedback ----------
 function toast(msg, cls = '') {
@@ -59,7 +81,7 @@ function banner(html, ms = 6000) {
   clearTimeout(bannerTimer); bannerTimer = setTimeout(() => b.classList.add('hidden'), ms);
   b.onclick = () => b.classList.add('hidden');
 }
-const avatarHtml = (u, cls = '') => u ? `<span class="avatar ${cls}" style="background:${u.color}">${esc((u.name || '?')[0].toUpperCase())}</span>` : '';
+const avatarHtml = (u, cls = '') => u ? `<span class="avatar ${u.avatar ? 'has-pic' : ''} ${cls}" style="background:${u.avatar ? '#111' : AV_RED}">${avInner(u)}</span>` : '';
 const fmtTime = t => new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 function ago(t) {
   const s = Math.max(0, (Date.now() - t) / 1000);
@@ -259,12 +281,15 @@ $('#setpw-form').onsubmit = e => {
   });
 };
 $('#setpw-logout').onclick = () => { localStorage.removeItem('ps_token'); S.token = null; showOnboard('login'); };
-function renderMe() { const me = $('#me-btn'); me.textContent = S.user.name[0].toUpperCase(); me.style.background = S.user.color; }
+function renderMe() { setAvatar($('#me-btn'), S.user); }
 
 function connectSocket() {
   if (S.socket) return;
   const s = S.socket = io({ auth: { token: S.token } });
+  s.onAny((ev, ...args) => args.forEach(decorate)); // runs before the handlers below, so names/nicknames are resolved
   s.on('connect', () => { loadGroup(); refreshChats(); refreshInbox(); });
+  s.on('nicknames', d => { S.nicks = d.nicknames || {}; reloadPeople(); });
+  s.on('profile', d => { if (d.user.id === S.user.id) { Object.assign(S.user, { name: d.user.realName, avatar: d.user.avatar }); renderMe(); renderProfile(); } else reloadPeople(); });
   s.on('message', m => {
     if (S.thread && m.chatId === S.thread.chatId) {
       if (!S.threadMsgs.some(x => x.id === m.id)) S.threadMsgs.push(m);
@@ -469,18 +494,27 @@ $('#ed-send').onclick = async () => { ED.composed = await composeSnap(); openSen
 // ---------- send to ----------
 const SEL = { to: new Set(), groups: new Set() };
 function openSendSheet() {
-  SEL.to.clear(); SEL.groups.clear(); $('#send-story').checked = false;
-  $('#send-friends').innerHTML = S.friends.friends.length ? S.friends.friends.map(f => `<label class="send-row"><input type="checkbox" data-to="${f.user.id}">${avatarHtml(f.user)}<span class="grow"><b>${esc(f.user.name)}</b> ${f.streak ? `<span class="streak">🔥${f.streak}</span>` : ''}<br><small>@${esc(f.user.username)}</small></span><i class="check"></i></label>`).join('')
-    : '<div class="empty dark">Add friends to send them Peaks. <button class="link-btn" id="send-add">Add friends</button></div>';
-  $('#send-groups').innerHTML = S.groups.length ? S.groups.map(g => `<label class="send-row"><input type="checkbox" data-g="${g.id}"><span class="avatar ge">${esc(g.emoji)}</span><span class="grow"><b>${esc(g.name)}</b><br><small>${g.memberCount} members</small></span><i class="check"></i></label>`).join('') : '<div class="empty dark">No groups yet</div>';
-  $$('#send-sheet input[type=checkbox]').forEach(cb => cb.onchange = () => {
+  SEL.to.clear(); SEL.groups.clear(); $('#send-story').checked = false; $('#send-search').value = '';
+  renderSendRows(); renderSendSummary(); $('#send-sheet').classList.remove('hidden');
+}
+function renderSendRows() {
+  const q = $('#send-search').value.trim().toLowerCase().replace(/^@/, '');
+  const fr = [...S.friends.friends].sort((a, b) => a.user.name.localeCompare(b.user.name)).filter(f => personMatch(q, f.user));
+  const gr = S.groups.filter(g => matches(q, g.name));
+  $('#send-groups-title').classList.toggle('hidden', !!q && !gr.length);
+  $('#send-friends').innerHTML = fr.length ? fr.map(f => `<label class="send-row"><input type="checkbox" data-to="${f.user.id}">${avatarHtml(f.user)}<span class="grow"><b>${esc(f.user.name)}</b> ${f.streak ? `<span class="streak">🔥${f.streak}</span>` : ''}<br><small>@${esc(f.user.username)}${f.user.nick ? ' · ' + esc(f.user.realName) : ''}</small></span><i class="check"></i></label>`).join('')
+    : q ? `<div class="empty dark">No friends match “${esc(q)}”</div>` : '<div class="empty dark">Add friends to send them Peaks. <button class="link-btn" id="send-add">Add friends</button></div>';
+  $('#send-groups').innerHTML = gr.length ? gr.map(g => `<label class="send-row"><input type="checkbox" data-g="${g.id}"><span class="avatar ge">${esc(g.emoji)}</span><span class="grow"><b>${esc(g.name)}</b><br><small>${g.memberCount} members</small></span><i class="check"></i></label>`).join('') : '<div class="empty dark">No groups yet</div>';
+  $$('#send-sheet input[data-to]').forEach(cb => cb.checked = SEL.to.has(cb.dataset.to));
+  $$('#send-sheet input[data-g]').forEach(cb => cb.checked = SEL.groups.has(cb.dataset.g));
+  $$('#send-sheet input[data-to], #send-sheet input[data-g]').forEach(cb => cb.onchange = () => {
     if (cb.dataset.to) cb.checked ? SEL.to.add(cb.dataset.to) : SEL.to.delete(cb.dataset.to);
     if (cb.dataset.g) cb.checked ? SEL.groups.add(cb.dataset.g) : SEL.groups.delete(cb.dataset.g);
     renderSendSummary();
   });
   $('#send-add')?.addEventListener('click', () => { closeSheets(); openFriends(); });
-  renderSendSummary(); $('#send-sheet').classList.remove('hidden');
 }
+$('#send-search').oninput = renderSendRows;
 function renderSendSummary() {
   const names = [...($('#send-story').checked ? ['My Story'] : []), ...[...SEL.groups].map(id => S.groups.find(g => g.id === id)?.name), ...[...SEL.to].map(id => S.friends.friends.find(f => f.user.id === id)?.user.name)];
   $('#send-summary').textContent = names.length ? names.join(', ') : 'Pick friends, groups or My Story';
@@ -544,9 +578,12 @@ function statusLine(c) {
 function renderChatList() {
   const el = $('#chat-list');
   if (!S.chats.length) { el.innerHTML = '<div class="empty">No chats yet. <button class="link-btn" id="cl-add">Add friends</button> or create a group.</div>'; $('#cl-add').onclick = openFriends; return; }
-  el.innerHTML = S.chats.map(c => `<div class="chat-row" data-chat="${c.chatId}">
+  const q = $('#chat-search').value.trim().toLowerCase().replace(/^@/, '');
+  const list = S.chats.filter(c => c.type === 'dm' ? personMatch(q, c.user) : matches(q, c.title));
+  if (!list.length) { el.innerHTML = `<div class="empty">No chats match “${esc(q)}”</div>`; return; }
+  el.innerHTML = list.map(c => `<div class="chat-row" data-chat="${c.chatId}">
     ${c.type === 'dm' ? avatarHtml(c.user) : `<span class="avatar ge">${esc(c.group.emoji)}</span>`}
-    <div class="grow"><b>${esc(c.title)}</b><div class="cl-status">${statusLine(c)}</div></div>
+    <div class="grow"><b>${esc(c.type === 'dm' ? c.user.name : c.title)}</b>${c.type === 'dm' ? ` <small class="handle">@${esc(c.user.username)}</small>` : ''}<div class="cl-status">${statusLine(c)}</div></div>
     ${c.streak ? `<span class="streak">🔥${c.streak}</span>` : ''}
     <button class="cl-cam" data-snapto="${c.chatId}" title="Peak back">📷</button></div>`).join('');
   $$('.chat-row').forEach(r => {
@@ -563,6 +600,7 @@ function renderChatList() {
   });
 }
 $('#new-group-btn').onclick = () => openSheet('groups');
+$('#chat-search').oninput = renderChatList;
 
 // ---------- chat thread ----------
 async function openThread(chatId, silent) {
@@ -572,7 +610,8 @@ async function openThread(chatId, silent) {
     if (!silent || $('#thread').classList.contains('hidden')) { stopCamera(); $('#thread').classList.remove('hidden'); }
     const c = r.chat;
     const t = $('#thread-av');
-    if (c.type === 'dm') { t.textContent = c.other.name[0].toUpperCase(); t.style.background = c.other.color; $('#thread-title').textContent = c.other.name; $('#thread-sub').textContent = `@${c.other.username}${c.streak ? ` · 🔥${c.streak}` : ''}`; }
+    t.classList.remove('has-pic');
+    if (c.type === 'dm') { setAvatar(t, c.other); $('#thread-title').textContent = c.other.name; $('#thread-sub').textContent = `@${c.other.username}${c.other.nick ? ` · ${c.other.realName}` : ''}${c.streak ? ` · 🔥${c.streak}` : ''}`; }
     else { const g = S.groups.find(x => x.id === c.groupId) || {}; t.textContent = g.emoji || '👥'; t.style.background = '#2a2a2e'; $('#thread-title').textContent = g.name || 'Group'; $('#thread-sub').textContent = `${c.members.length} members${g.code ? ' · code ' + g.code : ''}`; }
     $('#thread-form').classList.toggle('hidden', c.canSend === false);
     $('#thread-locked').classList.toggle('hidden', c.canSend !== false);
@@ -586,6 +625,7 @@ $('#thread-info').onclick = () => {
   const c = S.thread; if (!c) return;
   const g = S.groups.find(x => x.id === c.groupId);
   const acts = [{ label: '🗑 Delete conversation', danger: true, fn: () => deleteChatFlow({ chatId: c.chatId, type: c.type, title: c.type === 'dm' ? c.other.name : g?.name, group: g }) }];
+  if (c.type === 'dm') acts.unshift({ label: c.other.nick ? '✏️ Edit Nickname' : '✏️ Set Nickname', fn: () => nicknameFlow(c.other) });
   if (c.type === 'dm' && c.canSend !== false) acts.push({ label: '🚫 Remove Friend', danger: true, fn: () => removeFriendFlow(c.other) });
   if (g) { acts.unshift({ label: '🔗 Share invite', fn: () => shareGroup(g) }); acts.push({ label: '🚪 Leave group', danger: true, fn: () => leaveGroupFlow(g) }); }
   askAction(c.type === 'dm' ? c.other.name : (g?.name || 'Chat'), '', acts);
@@ -629,7 +669,7 @@ function askConfirm(title, body, okLabel = 'Delete') {
 }
 async function deleteChatFlow(c) {
   if (!c) return;
-  const name = c.title || 'this chat';
+  const name = (c.type === 'dm' && c.user?.name) || c.title || 'this chat';
   const ok = await askConfirm(`Delete conversation with ${name}?`, c.type === 'dm'
     ? `This clears the chat for you only. ${name} still keeps their copy. Unopened Peaks stay in your inbox.`
     : 'This clears the group chat for you only. It comes back to your list when someone sends something new. Leave the group to stop getting messages.', 'Delete conversation');
@@ -714,7 +754,8 @@ function renderFriends() {
   const F = S.friends;
   $('#friend-requests').innerHTML = (F.incoming.length ? `<div class="section-title dark">Added Me</div>` + F.incoming.map(u => `<div class="send-row">${avatarHtml(u)}<span class="grow"><b>${esc(u.name)}</b><br><small>@${esc(u.username)}</small></span><button class="chip red" data-accept="${u.id}">Accept</button><button class="chip" data-remove="${u.id}">✕</button></div>`).join('') : '')
     + (F.outgoing.length ? `<div class="section-title dark">Pending</div>` + F.outgoing.map(u => `<div class="send-row">${avatarHtml(u)}<span class="grow"><b>${esc(u.name)}</b><br><small>@${esc(u.username)} · requested</small></span><button class="chip" data-remove="${u.id}">Cancel</button></div>`).join('') : '');
-  $('#friend-list').innerHTML = F.friends.length ? F.friends.map(f => `<div class="send-row">${avatarHtml(f.user)}<span class="grow"><b>${esc(f.user.name)}</b> ${f.streak ? `<span class="streak">🔥${f.streak}</span>` : ''}<br><small>@${esc(f.user.username)}</small></span><button class="chip" data-dm="${f.user.id}">💬</button><button class="chip" data-fmenu="${f.user.id}" title="More">⋯</button></div>`).join('')
+  F.friends.sort((a, b) => a.user.name.localeCompare(b.user.name));
+  $('#friend-list').innerHTML = F.friends.length ? F.friends.map(f => `<div class="send-row">${avatarHtml(f.user)}<span class="grow"><b>${esc(f.user.name)}</b> ${f.streak ? `<span class="streak">🔥${f.streak}</span>` : ''}<br><small>@${esc(f.user.username)}${f.user.nick ? ' · ' + esc(f.user.realName) : ''}</small></span><button class="chip" data-dm="${f.user.id}">💬</button><button class="chip" data-fmenu="${f.user.id}" title="More">⋯</button></div>`).join('')
     : '<div class="empty dark">No friends yet. Search a username above, or share yours from your Profile.</div>';
   bindFriendButtons('#friends-sheet');
   $$('#friend-list [data-fmenu]').forEach(b => {
@@ -724,10 +765,32 @@ function renderFriends() {
   });
 }
 function friendMenu(u) {
-  askAction(u.name, '@' + u.username, [
+  askAction(u.name, '@' + u.username + (u.nick ? ' · ' + u.realName : ''), [
     { label: '💬 Chat', fn: () => { closeSheets(); openThread('dm_' + [S.user.id, u.id].sort().join('_')); } },
+    { label: u.nick ? '✏️ Edit Nickname' : '✏️ Set Nickname', fn: () => nicknameFlow(u) },
     { label: '🚫 Remove Friend', danger: true, fn: () => removeFriendFlow(u) },
   ]);
+}
+// Private nicknames: only I see them (stored on my account, synced to my other devices)
+async function nicknameFlow(u) {
+  const v = await askText({ title: u.nick ? 'Edit Nickname' : 'Set Nickname', body: `Only you see this. Shows instead of “${u.realName || u.name}” (@${u.username}) everywhere in PeekaSnap.`,
+    value: u.nick || '', placeholder: u.realName || u.username, save: 'Save Nickname', clear: u.nick ? 'Clear Nickname' : null, avatar: u });
+  if (v === null) return;
+  try {
+    const r = await api('/api/nicknames/' + u.id, { method: 'PUT', body: { nickname: v } });
+    S.nicks = r.nicknames; toast(v ? `Nickname saved: ${v}` : 'Nickname cleared', 'y'); reloadPeople();
+  } catch (e) { toast(e.message); }
+}
+// Re-fetch everything that shows people after a nickname / profile picture change
+let reloadT;
+function reloadPeople() {
+  clearTimeout(reloadT);
+  reloadT = setTimeout(async () => {
+    await Promise.all([refreshFriends(), refreshChats(), refreshStories(), refreshInbox(), loadGroup()].map(p => Promise.resolve(p).catch(() => {})));
+    if (S.thread) openThread(S.thread.chatId, true);
+    if (!$('#send-sheet').classList.contains('hidden')) renderSendRows();
+    if (map) { Object.keys(friendMarkers).forEach(k => { friendMarkers[k].remove(); delete friendMarkers[k]; }); if (S.view === 'map') initMap(); }
+  }, 150);
 }
 async function removeFriendFlow(u) {
   const ok = await askConfirm(`Remove ${u.name} as a friend?`, `You'll stop seeing each other in Send To, on the Peak Map, and in Stories, and your streak ends. Your chat stays until you delete it. You can add them again later.`, 'Remove Friend');
@@ -761,7 +824,7 @@ $('#friend-search').oninput = e => {
 // ---------- profile ----------
 $('#me-btn').onclick = () => { renderProfile(); $('#profile-sheet').classList.remove('hidden'); };
 function renderProfile() {
-  const a = $('#profile-av'); a.textContent = S.user.name[0].toUpperCase(); a.style.background = S.user.color;
+  setAvatar($('#profile-av'), S.user); $('#av-remove').classList.toggle('hidden', !S.user.avatar);
   $('#profile-name').textContent = S.user.name; $('#profile-user').textContent = '@' + S.user.username;
   $('#ghost-switch').checked = !S.user.shareLocation;
   renderInstallBtn();
@@ -769,6 +832,99 @@ function renderProfile() {
   if (!('Notification' in window)) nb.textContent = isIOS && !isStandalone() ? '🔔 Alerts: add to Home Screen first' : '🔔 Alerts: in-app only on this browser';
   else nb.textContent = Notification.permission === 'granted' ? '🔔 Alerts are on' : '🔔 Turn on alerts';
 }
+// Text prompt sheet: resolves to the entered text, '' for "clear", or null if cancelled
+let textDone = null;
+function askText({ title, body = '', value = '', placeholder = '', save = 'Save', clear = null, avatar = null, required = false }) {
+  textDone?.(null);
+  $('#text-title').textContent = title; $('#text-body').textContent = body; $('#text-body').classList.toggle('hidden', !body);
+  const inp = $('#text-input'); inp.value = value; inp.placeholder = placeholder; inp.classList.remove('bad'); formErr('text-err', '');
+  $('#text-save').textContent = save; $('#text-clear').textContent = clear || ''; $('#text-clear').classList.toggle('hidden', !clear);
+  $('#text-av').classList.toggle('hidden', !avatar); if (avatar) setAvatar($('#text-av'), avatar);
+  $('#text-sheet').classList.remove('hidden'); setTimeout(() => { inp.focus(); inp.select(); }, 120);
+  return new Promise(res => {
+    textDone = v => { textDone = null; $('#text-sheet').classList.add('hidden'); res(v); };
+    $('#text-form').onsubmit = e => {
+      e.preventDefault(); const v = inp.value.replace(/\s+/g, ' ').trim();
+      if (required && !v) { inp.classList.add('bad'); return formErr('text-err', 'This can\'t be empty.'); }
+      textDone(v);
+    };
+    $('#text-clear').onclick = () => textDone('');
+    $('#text-cancel').onclick = () => textDone(null);
+    $('#text-sheet').onclick = e => { if (e.target.id === 'text-sheet') textDone(null); };
+  });
+}
+
+// ---------- profile picture: pick (camera / library) -> crop to circle -> 256px JPEG -> upload ----------
+$('#name-btn').onclick = async () => {
+  const v = await askText({ title: 'Display name', body: 'Your nickname on PeekaSnap. Friends see it unless they set their own nickname for you.', value: S.user.name, placeholder: S.user.username, save: 'Save', required: true });
+  if (!v || v === S.user.name) return;
+  try { const r = await api('/api/me', { method: 'PATCH', body: { name: v } }); Object.assign(S.user, { name: r.user.realName }); renderMe(); renderProfile(); toast('Display name saved', 'y'); } catch (e) { toast(e.message); }
+};
+const pickAvatar = () => askAction('Profile picture', '', [
+  { label: '📸 Take photo', fn: () => $('#av-camera').click() },
+  { label: '🖼 Choose from library', fn: () => $('#av-library').click() },
+  ...(S.user.avatar ? [{ label: '🗑 Remove picture', danger: true, fn: removeAvatar }] : []),
+]);
+$('#profile-av-btn').onclick = pickAvatar; $('#av-change').onclick = pickAvatar;
+$('#av-remove').onclick = removeAvatar;
+async function removeAvatar() {
+  if (!await askConfirm('Remove profile picture?', 'Friends will see your initials instead.', 'Remove picture')) return;
+  try { const r = await api('/api/me/avatar', { method: 'DELETE' }); S.user.avatar = r.user.avatar; renderMe(); renderProfile(); toast('Picture removed', 'y'); } catch (e) { toast(e.message); }
+}
+const CROP = { img: null, w: 0, h: 0, base: 1, zoom: 1, x: 0, y: 0, size: 0 };
+['#av-camera', '#av-library'].forEach(sel => $(sel).onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) openCrop(f); });
+function openCrop(file) {
+  const url = URL.createObjectURL(file), img = $('#crop-img');
+  img.onerror = () => { URL.revokeObjectURL(url); toast("Couldn't open that picture. Try a JPEG or PNG."); };
+  img.onload = () => {
+    $('#crop-sheet').classList.remove('hidden'); formErr('crop-err', '');
+    requestAnimationFrame(() => {
+      CROP.size = $('#crop-stage').clientWidth; CROP.w = img.naturalWidth; CROP.h = img.naturalHeight;
+      CROP.base = CROP.size / Math.min(CROP.w, CROP.h); CROP.zoom = 1; $('#crop-zoom').value = 1;
+      CROP.x = (CROP.size - CROP.w * CROP.base) / 2; CROP.y = (CROP.size - CROP.h * CROP.base) / 2; applyCrop();
+    });
+  };
+  img.src = url;
+}
+function applyCrop() {
+  const sc = CROP.base * CROP.zoom, S0 = CROP.size;
+  CROP.x = Math.min(0, Math.max(S0 - CROP.w * sc, CROP.x)); CROP.y = Math.min(0, Math.max(S0 - CROP.h * sc, CROP.y)); // always cover the circle
+  $('#crop-img').style.transform = `translate(${CROP.x}px, ${CROP.y}px) scale(${sc})`;
+}
+$('#crop-zoom').oninput = e => { // zoom around the center
+  const c = CROP.size / 2, old = CROP.base * CROP.zoom; CROP.zoom = +e.target.value; const nw = CROP.base * CROP.zoom;
+  CROP.x = c - (c - CROP.x) * nw / old; CROP.y = c - (c - CROP.y) * nw / old; applyCrop();
+};
+{
+  const st = $('#crop-stage'), pts = new Map(); let last = null, pinch0 = null;
+  st.addEventListener('pointerdown', e => { st.setPointerCapture(e.pointerId); pts.set(e.pointerId, [e.clientX, e.clientY]); last = [e.clientX, e.clientY]; if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch0 = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), z: CROP.zoom }; } });
+  st.addEventListener('pointermove', e => {
+    if (!pts.has(e.pointerId)) return; pts.set(e.pointerId, [e.clientX, e.clientY]);
+    if (pts.size === 2 && pinch0) { const [a, b] = [...pts.values()]; const z = Math.min(4, Math.max(1, pinch0.z * Math.hypot(a[0] - b[0], a[1] - b[1]) / pinch0.d)); $('#crop-zoom').value = z; $('#crop-zoom').oninput({ target: { value: z } }); return; }
+    CROP.x += e.clientX - last[0]; CROP.y += e.clientY - last[1]; last = [e.clientX, e.clientY]; applyCrop();
+  });
+  const up = e => { pts.delete(e.pointerId); pinch0 = null; const r = [...pts.values()][0]; if (r) last = r; };
+  st.addEventListener('pointerup', up); st.addEventListener('pointercancel', up);
+  st.addEventListener('wheel', e => { e.preventDefault(); const z = Math.min(4, Math.max(1, CROP.zoom * (e.deltaY < 0 ? 1.08 : 0.93))); $('#crop-zoom').value = z; $('#crop-zoom').oninput({ target: { value: z } }); }, { passive: false });
+}
+function cropBlob(px = 256) {
+  const c = document.createElement('canvas'); c.width = c.height = px; const g = c.getContext('2d');
+  const sc = CROP.base * CROP.zoom, k = px / CROP.size;
+  g.fillStyle = '#000'; g.fillRect(0, 0, px, px); g.imageSmoothingQuality = 'high';
+  g.drawImage($('#crop-img'), CROP.x * k, CROP.y * k, CROP.w * sc * k, CROP.h * sc * k);
+  return new Promise(res => c.toBlob(res, 'image/jpeg', 0.85));
+}
+$('#crop-save').onclick = async () => {
+  const b = $('#crop-save'); if (b.disabled) return;
+  b.disabled = true; b.classList.add('loading'); const label = b.textContent; b.textContent = 'Saving…'; formErr('crop-err', '');
+  try {
+    const fd = new FormData(); fd.append('avatar', await cropBlob(), 'avatar.jpg');
+    const r = await api('/api/me/avatar', { body: fd });
+    S.user.avatar = r.user.avatar; renderMe(); renderProfile(); $('#crop-sheet').classList.add('hidden');
+    URL.revokeObjectURL($('#crop-img').src); toast('Profile picture saved 📸', 'y');
+  } catch (e) { formErr('crop-err', e.message); }
+  finally { b.disabled = false; b.classList.remove('loading'); b.textContent = label; }
+};
 $('#notif-btn').onclick = enableAlerts;
 $('#groups-btn').onclick = () => { closeSheets(); openSheet('groups'); };
 $('#signout-btn').onclick = async () => {
@@ -806,7 +962,7 @@ async function setGhost(ghost) {
 async function refreshStories() { if (!S.token) return; try { S.stories = await api('/api/stories'); } catch (_) {} renderStoriesTab(); }
 function renderStoriesTab() {
   const F = S.stories.friends;
-  $('#story-bar').innerHTML = F.length ? F.map((f, i) => `<button class="story-card" data-fs="${i}"><div class="story-ring ${f.allSeen ? 'done' : ''}"><img src="${f.stories[f.stories.length - 1].photo}" alt=""></div><div class="lbl">${esc(f.user.name)}</div><div class="cd">${ago(f.latest)}</div></button>`).join('')
+  $('#story-bar').innerHTML = F.length ? F.map((f, i) => `<button class="story-card" data-fs="${i}"><div class="story-ring ${f.allSeen ? 'done' : ''}"><img src="${f.stories[f.stories.length - 1].photo}" alt=""></div>${avatarHtml(f.user, 'story-mini')}<div class="lbl">${esc(f.user.name)}</div><div class="cd">${ago(f.latest)}</div></button>`).join('')
     : '<div class="empty small">No stories from friends yet</div>';
   const M = S.stories.mine;
   $('#my-story').innerHTML = `<button class="my-story-card" id="my-story-open">${M.length ? `<img src="${M[M.length - 1].photo}" alt="">` : '<span class="story-new">＋</span>'}<div class="grow"><b>My Story</b><div class="muted">${M.length ? `${M.length} Peak${M.length > 1 ? 's' : ''} · 👁 ${new Set(M.flatMap(s => s.views.map(v => v.user.id))).size} viewers` : 'Tap to add a Peak · lasts 24h'}</div></div></button>`;
@@ -820,7 +976,7 @@ function showStory() {
   const { entry, i, mine } = SV, s = entry.stories[i]; if (!s) return closeStoryViewer();
   $('#sv-img').src = s.photo;
   $('#sv-bars').innerHTML = entry.stories.map((_, k) => `<i class="${k < i ? 'on' : ''}">${k === i ? `<b style="animation-duration:${s.timer}s"></b>` : ''}</i>`).join('');
-  const a = $('#sv-av'); a.textContent = entry.user.name[0].toUpperCase(); a.style.background = entry.user.color;
+  setAvatar($('#sv-av'), entry.user);
   $('#sv-name').textContent = mine ? 'My Story' : entry.user.name; $('#sv-time').textContent = ago(s.createdAt) + ' ago';
   $('#sv-views').classList.toggle('hidden', !mine);
   if (mine) $('#sv-views').innerHTML = `👁 ${s.views.length}${s.views.length ? ' · ' + s.views.map(v => esc(v.user.name)).join(', ') : ''} <button class="chip" id="sv-del">🗑</button>`;
@@ -840,7 +996,7 @@ let map, meMarker; const friendMarkers = {};
 const tiles = () => L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' });
 const emojiIcon = (e, size = 30) => L.divIcon({ className: '', html: `<div class="emoji-marker">${e}</div>`, iconSize: [size, size], iconAnchor: [size / 2, size / 2] });
 const AREA_STYLE = { color: '#FF2D46', weight: 2, dashArray: '6 8', fillColor: '#FF2D46', fillOpacity: 0.08 };
-const personIcon = (u, cls = '') => L.divIcon({ className: '', html: `<div class="person-marker ${cls}"><span style="background:${u.color}">${esc(u.name[0].toUpperCase())}</span><em>${esc(u.name)}</em></div>`, iconSize: [44, 60], iconAnchor: [22, 22] });
+const personIcon = (u, cls = '') => L.divIcon({ className: '', html: `<div class="person-marker ${cls}"><span style="background:${u.avatar ? '#111' : AV_RED}">${avInner(u)}</span><em>${esc(u.name)}</em></div>`, iconSize: [44, 60], iconAnchor: [22, 22] });
 async function initMap() {
   if (!map) {
     map = L.map('map', { zoomControl: false }).setView([37.7749, -122.4194], 13);

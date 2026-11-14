@@ -107,7 +107,7 @@ function renderPings() {
   const dot = (l, u, cls, label) => {
     const age = sNow() - (l.at || l.t);
     const op = Math.max(0.25, 1 - age / fadeMs);
-    L.marker([l.lat, l.lng], { icon: L.divIcon({ className: '', html: `<div class="ping-marker ${cls}" style="opacity:${op.toFixed(2)}"><span style="background:${u.color}">${esc(u.name[0].toUpperCase())}</span><em>${esc(label)}</em></div>`, iconSize: [44, 60], iconAnchor: [22, 22] }) }).addTo(HS.layers.pings);
+    L.marker([l.lat, l.lng], { icon: L.divIcon({ className: '', html: `<div class="ping-marker ${cls}" style="opacity:${op.toFixed(2)}"><span style="background:${u.avatar ? '#111' : AV_RED}">${avInner(u)}</span><em>${esc(label)}</em></div>`, iconSize: [44, 60], iconAnchor: [22, 22] }) }).addTo(HS.layers.pings);
   };
   // newest fix per player only
   const latest = {};

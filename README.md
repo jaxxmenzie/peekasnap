@@ -11,6 +11,7 @@ npm start            # http://localhost:3000   (PORT=xxxx to change)
 npm test             # smoke (hide & seek) + auth + social + manhunt end-to-end tests
 node test/pwa-check.js     # installable-app checks (Chrome)
 node test/auth-ui.js [URL] # phone-browser sign up / log in / set password end-to-end (local, or a live URL)
+node test/profile-ui.js [URL] # phone-browser profile pictures + nicknames end-to-end (local run also retakes screenshots 33-36)
 node test/screenshots.js   # regenerate screenshots (needs Chrome at /usr/bin/google-chrome or CHROME=...)
 ```
 
@@ -21,6 +22,8 @@ Needs Node 18+. Optional env vars: `PORT`, `DATA_DIR`, `UPLOAD_DIR`, `FIND_RADIU
 Bottom nav: **Map · Chat · Camera (home) · Stories · Play**.
 
 - **Accounts**: sign up with a display name, a unique `@username` and a password (6+ characters), and log in with username + password. Passwords are stored as scrypt hashes; each device gets a random session token (only its SHA-256 is stored). Failed logins are rate-limited (8 per username per IP per 15 min). Change your password in Profile (this logs out your other devices); Log out ends that device's session. Accounts made before passwords keep working on their original device, which asks them to set a password first; they can't be logged into from another device until they do.
+- **Profile pictures**: tap your picture (top left) → Profile → tap the picture or **📷 Change picture**, then **Take photo** (front camera) or **Choose from library**. Drag and zoom (slider or pinch) to fit the circle; the app crops it and shrinks it to a 256×256 JPEG (about 10–20 KB) on your phone before uploading. **🗑 Remove picture** goes back to your initials in a red circle. Pictures show in the chat list and chat headers, Send To, Add Friends and search results, Stories, Peak Map pins, game lobbies and scoreboards. Friends see changes right away.
+- **Nicknames**: **✏️ Name** in your Profile sets your display name, which is the nickname everyone sees. You can also give a friend a **private nickname** that only you see: tap ⋯ or long-press them in Add Friends, or tap ⋯ in your chat with them, then **Set Nickname**. **Clear Nickname** removes it. Names show in this order: your nickname for them, then their display name, then their username. Their @username stays visible underneath. Search in Chat and in Send To matches nicknames, display names and usernames. Nicknames sync across your own devices. Notification and system-message text (for example "Ava found…") still use display names.
 - **Friends**: search by username, send/accept requests (👤 top right), share an add-me link (`/?add=username`). 🔥 Peak streaks count days you both sent each other a Peak. **Remove Friend**: in Add Friends tap ⋯ (or long-press) on a friend, or use ⋯ in your chat with them. After you confirm, you're removed from each other's lists, Send To, the Peak Map and Stories, and the streak ends. Your existing chat stays (read-only) until you delete it. You can add each other again later.
 - **Peaks**: the camera opens first. Take a Peak, then add a caption, draw (colors + undo), drop emoji stickers, and set a timer (1–10 s or ∞). Send to friends, groups, and/or **My Story**. Peaks open once with a countdown ring, can be replayed once (within 10 min), then are deleted from the server. Unopened Peaks expire after 30 days (group Peaks after 24 h). Screenshot blocking isn't possible on the web.
 - **Chat**: 1:1 (friends only) and group chats with text and photos, typing indicator, Snapchat-style statuses (New Peak / New Chat / Delivered / Opened) and read receipts.
@@ -88,5 +91,5 @@ Run a single instance. Ping timers and the JSON store live in one process.
 - Accounts have no email or password reset: if you forget your password, the account can't be recovered. Story and chat photo URLs are unguessable but not access-controlled (Peak photos are private and served once).
 - No screenshot detection or blocking (browsers don't allow it).
 - GPS can be off by 5–30 m, which is why tags and finds have a confirm fallback. Background location doesn't run on iOS/Android web when the app is closed, so keep the app open during a Manhunt.
-- On Render's free plan the data file is wiped on every deploy/restart, and the service sleeps when idle (first load can take ~1 min).
+- On Render's free plan the data file and uploaded photos (profile pictures included) are wiped on every deploy/restart, and the service sleeps when idle (first load can take ~1 min).
 - Uses the public OpenStreetMap tile server: fine for a small group, not heavy traffic.
