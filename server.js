@@ -158,6 +158,13 @@ app.use(express.json({ limit: '200kb' }));
 // PWA files: correct manifest type, and never let browsers cache an old service worker
 app.get('/manifest.json', (req, res) => { res.type('application/manifest+json'); res.set('Cache-Control', 'no-cache'); res.sendFile(path.join(__dirname, 'public', 'manifest.json')); });
 app.get('/sw.js', (req, res) => { res.type('application/javascript'); res.set({ 'Cache-Control': 'no-cache', 'Service-Worker-Allowed': '/' }); res.sendFile(path.join(__dirname, 'public', 'sw.js')); });
+// index.html is served with versioned asset URLs (?v=<build>) so phones never run an old cached app.js against a new page
+const BUILD = (process.env.RENDER_GIT_COMMIT || '').slice(0, 8) || String(Date.now());
+const INDEX_HTML = fs.readFileSync(path.join(__dirname, 'public', 'index.html'), 'utf8')
+  .replace(/(src|href)="\/(app\.js|game\.js|hunt\.js|styles\.css)"/g, `$1="/$2?v=${BUILD}"`);
+const sendIndex = (req, res) => { res.type('html'); res.set('Cache-Control', 'no-cache'); res.send(INDEX_HTML); };
+app.get(['/', '/index.html'], sendIndex);
+app.get('/api/version', (req, res) => res.json({ build: BUILD }));
 app.use(express.static(path.join(__dirname, 'public'), { setHeaders: (res, f) => { if (/\.(html|js|css)$/.test(f)) res.set('Cache-Control', 'no-cache'); } }));
 app.use('/uploads', express.static(UPLOAD_DIR, { maxAge: '7d' }));
 app.use('/vendor/leaflet', express.static(path.join(__dirname, 'node_modules/leaflet/dist')));

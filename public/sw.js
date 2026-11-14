@@ -1,5 +1,5 @@
 /* PeekaSnap service worker: app-shell cache, offline fallback, push + notification clicks */
-const VERSION = 'peekasnap-v5';
+const VERSION = 'peekasnap-v6';
 const SHELL = [
   '/', '/index.html', '/styles.css', '/app.js', '/game.js', '/hunt.js', '/manifest.json', '/offline.html', '/icon.svg',
   '/icons/icon-192.png', '/icons/icon-512.png', '/icons/maskable-512.png', '/icons/apple-touch-icon.png', '/icons/favicon-32.png',
@@ -25,10 +25,9 @@ self.addEventListener('fetch', e => {
     e.respondWith(caches.open('peekasnap-photos').then(async c => (await c.match(req)) || fetch(req).then(r => { if (r.ok) c.put(req, r.clone()); return r; })));
     return;
   }
-  e.respondWith(caches.match(req).then(hit => {                                   // shell assets: stale-while-revalidate
-    const net = fetch(req).then(r => { if (r.ok) { const copy = r.clone(); caches.open(VERSION).then(c => c.put(req, copy)); } return r; }).catch(() => hit);
-    return hit || net;
-  }));
+  // app code, styles, manifest: network first so a new deploy is used immediately; the cache is only an offline fallback
+  e.respondWith(fetch(req).then(r => { if (r.ok) { const copy = r.clone(); caches.open(VERSION).then(c => c.put(req, copy)); } return r; })
+    .catch(async () => (await caches.match(req)) || (await caches.match(req, { ignoreSearch: true })) || Response.error()));
 });
 
 // Web Push: show a notification unless the app is open and visible (it shows its own in-app banner then)

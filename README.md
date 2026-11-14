@@ -10,6 +10,7 @@ npm install
 npm start            # http://localhost:3000   (PORT=xxxx to change)
 npm test             # smoke (hide & seek) + auth + social + manhunt end-to-end tests
 node test/pwa-check.js     # installable-app checks (Chrome)
+node test/auth-ui.js [URL] # phone-browser sign up / log in / set password end-to-end (local, or a live URL)
 node test/screenshots.js   # regenerate screenshots (needs Chrome at /usr/bin/google-chrome or CHROME=...)
 ```
 
@@ -83,6 +84,7 @@ Run a single instance. Ping timers and the JSON store live in one process.
 
 ## Limitations
 
+- Updates: `index.html` loads `app.js`/`styles.css` with a per-deploy `?v=` version and the service worker fetches app code network-first, so a phone never runs old cached code against a new page (the cause of the first password-screen bug).
 - Accounts have no email or password reset: if you forget your password, the account can't be recovered. Story and chat photo URLs are unguessable but not access-controlled (Peak photos are private and served once).
 - No screenshot detection or blocking (browsers don't allow it).
 - GPS can be off by 5–30 m, which is why tags and finds have a confirm fallback. Background location doesn't run on iOS/Android web when the app is closed, so keep the app open during a Manhunt.

@@ -467,3 +467,11 @@ input,textarea,.bubble,.chat-feed{-webkit-user-select:text;user-select:text}
 .onboard-form input[type=password]{letter-spacing:1px}
 .onboard .tag b{color:var(--accent)}
 .thread-locked{padding:12px 16px calc(12px + var(--safe-b));background:var(--s1);border-top:1px solid var(--line);color:var(--sub);font-size:13px;text-align:center}
+.form-err{display:none;background:rgba(255,45,70,.14);border:1.5px solid var(--accent);color:#ff8a98;font-weight:800;font-size:14px;border-radius:14px;padding:10px 12px;text-align:center;line-height:1.35}
+.form-err.show{display:block;animation:shake .3s}
+@keyframes shake{25%{transform:translateX(-6px)}75%{transform:translateX(6px)}}
+.onboard-form input.bad,.at-input:has(input.bad),.sheet input.bad{border-color:var(--accent)!important;box-shadow:0 0 0 3px rgba(255,45,70,.25)}
+button.loading{opacity:.75;pointer-events:none}
+button.loading::before{content:"";display:inline-block;width:14px;height:14px;margin-right:8px;vertical-align:-2px;border:2.5px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+#setpw-logout{margin-top:6px}

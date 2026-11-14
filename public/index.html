@@ -42,22 +42,26 @@
   <h1>PeekaSnap</h1>
   <p class="tag">Peak at your friends. Then hunt them down.</p>
   <div class="auth-tabs"><button id="tab-signup" class="on" type="button">Sign up</button><button id="tab-login" type="button">Log in</button></div>
-  <form id="signup-form" class="onboard-form">
+  <form id="signup-form" novalidate class="onboard-form">
     <input id="signup-name" maxlength="24" placeholder="Display name" autocomplete="nickname" required>
     <div class="at-input"><span>@</span><input id="signup-username" maxlength="20" placeholder="username" autocapitalize="none" autocomplete="username" spellcheck="false" required></div>
     <input id="signup-password" type="password" minlength="6" maxlength="200" placeholder="Password (6+ characters)" autocomplete="new-password" required>
+    <div id="signup-err" class="form-err" role="alert" aria-live="assertive"></div>
     <button class="btn-dark" type="submit">Sign up</button>
   </form>
-  <form id="login-form" class="onboard-form hidden">
+  <form id="login-form" novalidate class="onboard-form hidden">
     <div class="at-input"><span>@</span><input id="login-username" maxlength="20" placeholder="username" autocapitalize="none" autocomplete="username" spellcheck="false" required></div>
     <input id="login-password" type="password" maxlength="200" placeholder="Password" autocomplete="current-password" required>
+    <div id="login-err" class="form-err" role="alert" aria-live="assertive"></div>
     <button class="btn-dark" type="submit">Log in</button>
   </form>
-  <form id="setpw-form" class="onboard-form hidden">
+  <form id="setpw-form" novalidate class="onboard-form hidden">
     <p class="tag">PeekaSnap now uses passwords. Set one to keep your account <b id="setpw-user"></b>.</p>
     <input id="setpw-password" type="password" minlength="6" maxlength="200" placeholder="New password (6+ characters)" autocomplete="new-password" required>
     <input id="setpw-confirm" type="password" minlength="6" maxlength="200" placeholder="Type it again" autocomplete="new-password" required>
+    <div id="setpw-err" class="form-err" role="alert" aria-live="assertive"></div>
     <button class="btn-dark" type="submit">Save password</button>
+    <button class="link-btn" type="button" id="setpw-logout">Not you? Log in with another account</button>
   </form>
   <p class="fine" id="auth-fine">Friends add you by your username.</p>
 </section>
@@ -211,11 +215,12 @@
 
 <section id="password-sheet" class="sheet-wrap hidden">
   <div class="sheet"><div class="grab"></div><div class="sheet-head"><h2>Change password</h2><button class="x" data-close>✕</button></div>
-    <form id="password-form" class="sheet-body">
+    <form id="password-form" novalidate class="sheet-body">
       <label>Current password</label><input id="pw-current" type="password" autocomplete="current-password" required>
       <label>New password</label><input id="pw-new" type="password" minlength="6" autocomplete="new-password" required>
       <label>New password again</label><input id="pw-confirm" type="password" minlength="6" autocomplete="new-password" required>
       <div class="hint-text">Changing it logs you out on your other devices.</div>
+      <div id="password-err" class="form-err" role="alert" aria-live="assertive"></div>
       <button class="btn-red wide" type="submit">Save new password</button>
     </form></div>
 </section>

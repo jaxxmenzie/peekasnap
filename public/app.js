@@ -17,8 +17,11 @@ async function api(path, opts = {}) {
   const o = { method: opts.method || (opts.body ? 'POST' : 'GET'), headers: { 'x-token': S.token || '' } };
   if (opts.body instanceof FormData) o.body = opts.body;
   else if (opts.body) { o.body = JSON.stringify(opts.body); o.headers['content-type'] = 'application/json'; }
-  const r = await fetch(path, o);
+  let r;
+  try { r = await fetch(path, o); }
+  catch (_) { const e = new Error(navigator.onLine === false ? "You're offline. Check your connection and try again." : "Can't reach PeekaSnap right now. Check your connection and try again."); e.status = 0; throw e; }
   const j = await r.json().catch(() => ({}));
+  if (!r.ok && !j.error && r.status >= 500) j.error = 'PeekaSnap had a problem. Try again in a moment.';
   if (!r.ok) { const e = new Error(j.error || 'Something went wrong'); e.status = r.status; e.data = j; throw e; }
   return j;
 }
@@ -170,10 +173,15 @@ $('#install-later').onclick = $('#install-x').onclick = () => { localStorage.set
 $('#install-btn').onclick = () => { closeSheets(); showInstallCard(true); };
 
 // ---------- boot / auth ----------
+let bootTries = 0;
 async function boot() {
   if (!S.token) return showOnboard();
   try { const me = await api('/api/me'); S.user = me.user; S.groups = me.groups; }
-  catch (e) { if (e.status === 401) { localStorage.removeItem('ps_token'); S.token = null; return showOnboard(); } toast(e.message); return; }
+  catch (e) {
+    if (e.status === 401) { localStorage.removeItem('ps_token'); S.token = null; return showOnboard('login'); }
+    bootTries = (bootTries || 0) + 1; toast(bootTries > 1 ? e.message : 'Connecting to PeekaSnap…'); // e.g. server waking up
+    if (bootTries < 8) setTimeout(boot, 3000); return;
+  }
   if (S.user.needsPassword) return showOnboard('setpw'); // accounts from before passwords must set one
   $('#onboard').classList.add('hidden'); $('#app').classList.remove('hidden');
   renderMe();
@@ -195,32 +203,62 @@ function showOnboard(mode = 'signup') {
 $('#tab-signup').onclick = () => showOnboard('signup');
 $('#tab-login').onclick = () => showOnboard('login');
 async function afterAuth(token) {
-  S.token = token; localStorage.setItem('ps_token', token);
+  S.token = token; localStorage.setItem('ps_token', token); if (S.socket) S.socket.auth.token = token;
   const q = new URLSearchParams(location.search);
   if (q.get('join')) { try { const j = await api('/api/groups/join', { body: { code: q.get('join') } }); S.groupId = j.group.id; localStorage.setItem('ps_group', S.groupId); } catch (_) {} }
   if (q.get('add')) { try { await api('/api/friends/request', { body: { username: q.get('add') } }); } catch (_) {} }
   boot();
 }
-$('#login-form').onsubmit = async e => {
-  e.preventDefault();
-  try { const r = await api('/api/login', { body: { username: $('#login-username').value, password: $('#login-password').value } }); $('#login-password').value = ''; afterAuth(r.token); }
-  catch (err) { toast(err.message); }
-};
-$('#setpw-form').onsubmit = async e => {
-  e.preventDefault();
-  if ($('#setpw-password').value !== $('#setpw-confirm').value) return toast("Passwords don't match");
-  try { const r = await api('/api/me/password', { body: { password: $('#setpw-password').value } }); toast('Password saved 🔒', 'y'); afterAuth(r.token); }
-  catch (err) { toast(err.message); }
-};
 $('#signup-name').oninput = e => { const u = $('#signup-username'); if (!u.dataset.touched) u.value = e.target.value.toLowerCase().replace(/[^a-z0-9_.]/g, '').slice(0, 20); };
 $('#signup-username').oninput = e => { e.target.dataset.touched = 1; e.target.value = e.target.value.toLowerCase().replace(/[^a-z0-9_.]/g, ''); };
-$('#signup-form').onsubmit = async e => {
+// auth forms: our own validation (same on iOS Safari), visible red errors, a loading state; Enter/Go submits the form
+function formErr(id, msg) { const el = $('#' + id); if (!el) return; el.textContent = msg || ''; el.classList.toggle('show', !!msg); if (msg) navigator.vibrate?.(40); }
+async function runAuthForm(form, errId, validate, action) {
+  const btn = form.querySelector('button[type=submit]');
+  if (btn.disabled) return;
+  formErr(errId, '');
+  const problem = validate(); if (problem) { formErr(errId, problem.msg); problem.el?.classList.add('bad'); problem.el?.focus(); return; }
+  const label = btn.textContent; btn.disabled = true; btn.classList.add('loading'); btn.textContent = 'One sec…';
+  const slow = setTimeout(() => { btn.textContent = 'Waking up the server…'; }, 4000); // free hosting sleeps when idle
+  try { await action(); }
+  catch (err) { formErr(errId, err.message || 'Something went wrong. Try again.'); }
+  finally { clearTimeout(slow); btn.disabled = false; btn.classList.remove('loading'); btn.textContent = label; }
+}
+$$('.onboard-form input, #password-form input').forEach(i => i.addEventListener('input', () => { i.classList.remove('bad'); const err = i.closest('form').querySelector('.form-err'); if (err) formErr(err.id, ''); }));
+const USER_RE = /^[a-z0-9_.]{3,20}$/;
+$('#signup-form').onsubmit = e => {
   e.preventDefault();
-  try {
-    const r = await api('/api/signup', { body: { name: $('#signup-name').value, username: $('#signup-username').value, password: $('#signup-password').value } });
-    $('#signup-password').value = ''; afterAuth(r.token);
-  } catch (err) { toast(err.message); }
+  const name = $('#signup-name'), user = $('#signup-username'), pw = $('#signup-password');
+  runAuthForm(e.target, 'signup-err', () =>
+    name.value.trim().length < 2 ? { el: name, msg: 'Pick a display name with at least 2 characters.' }
+    : !USER_RE.test(user.value) ? { el: user, msg: 'Usernames are 3-20 letters, numbers, _ or .' }
+    : pw.value.length < 6 ? { el: pw, msg: 'Password must be at least 6 characters.' } : null,
+  async () => {
+    const r = await api('/api/signup', { body: { name: name.value.trim(), username: user.value, password: pw.value } });
+    pw.value = ''; await afterAuth(r.token);
+  });
 };
+$('#login-form').onsubmit = e => {
+  e.preventDefault();
+  const user = $('#login-username'), pw = $('#login-password');
+  runAuthForm(e.target, 'login-err', () =>
+    !user.value.trim() ? { el: user, msg: 'Enter your username.' } : !pw.value ? { el: pw, msg: 'Enter your password.' } : null,
+  async () => {
+    const r = await api('/api/login', { body: { username: user.value, password: pw.value } });
+    pw.value = ''; await afterAuth(r.token);
+  });
+};
+$('#setpw-form').onsubmit = e => {
+  e.preventDefault();
+  const pw = $('#setpw-password'), pw2 = $('#setpw-confirm');
+  runAuthForm(e.target, 'setpw-err', () =>
+    pw.value.length < 6 ? { el: pw, msg: 'Password must be at least 6 characters.' } : pw.value !== pw2.value ? { el: pw2, msg: "Passwords don't match." } : null,
+  async () => {
+    const r = await api('/api/me/password', { body: { password: pw.value } });
+    pw.value = pw2.value = ''; toast('Password saved 🔒', 'y'); await afterAuth(r.token);
+  });
+};
+$('#setpw-logout').onclick = () => { localStorage.removeItem('ps_token'); S.token = null; showOnboard('login'); };
 function renderMe() { const me = $('#me-btn'); me.textContent = S.user.name[0].toUpperCase(); me.style.background = S.user.color; }
 
 function connectSocket() {
@@ -738,12 +776,17 @@ $('#signout-btn').onclick = async () => {
   try { await api('/api/logout', { body: {} }); } catch (_) {}
   localStorage.clear(); location.reload();
 };
-$('#password-btn').onclick = () => { closeSheets(); $('#password-form').reset(); $('#password-sheet').classList.remove('hidden'); };
-$('#password-form').onsubmit = async e => {
+$('#password-btn').onclick = () => { closeSheets(); $('#password-form').reset(); formErr('password-err', ''); $('#password-sheet').classList.remove('hidden'); };
+$('#password-form').onsubmit = e => {
   e.preventDefault();
-  if ($('#pw-new').value !== $('#pw-confirm').value) return toast("New passwords don't match");
-  try { const r = await api('/api/me/password', { body: { current: $('#pw-current').value, password: $('#pw-new').value } }); S.token = r.token; localStorage.setItem('ps_token', r.token); if (S.socket) S.socket.auth.token = r.token; closeSheets(); toast('Password changed 🔒 Other devices were logged out', 'y'); }
-  catch (err) { toast(err.message); }
+  const cur = $('#pw-current'), pw = $('#pw-new'), pw2 = $('#pw-confirm');
+  runAuthForm(e.target, 'password-err', () =>
+    !cur.value ? { el: cur, msg: 'Enter your current password.' } : pw.value.length < 6 ? { el: pw, msg: 'New password must be at least 6 characters.' } : pw.value !== pw2.value ? { el: pw2, msg: "New passwords don't match." } : null,
+  async () => {
+    const r = await api('/api/me/password', { body: { current: cur.value, password: pw.value } });
+    S.token = r.token; localStorage.setItem('ps_token', r.token); if (S.socket) S.socket.auth.token = r.token;
+    closeSheets(); toast('Password changed 🔒 Other devices were logged out', 'y');
+  });
 };
 $('#share-username').onclick = async () => {
   const url = `${location.origin}/?add=${S.user.username}`, text = `Add me on PeekaSnap: @${S.user.username}`;
