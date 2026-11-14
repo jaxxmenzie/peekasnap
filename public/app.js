@@ -1,4 +1,4 @@
-/* PeekaSnap client - vanilla JS, no build step */
+/* PeekaSnap client - core Snapchat-style app (camera, snaps, chat, friends, stories, map). Games live in game.js and hunt.js. */
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -6,7 +6,11 @@ const S = {
   token: localStorage.getItem('ps_token'), user: null, groups: [],
   groupId: localStorage.getItem('ps_group'), group: null, hides: [], messages: [], leaderboard: [],
   view: 'camera', snap: null, myLoc: null, socket: null,
+  friends: { friends: [], incoming: [], outgoing: [] }, chats: [], inbox: [], stories: { mine: [], friends: [] },
+  thread: null, threadMsgs: [], threadReads: {}, hideMode: false, minPingDelayMs: 5 * 60000,
 };
+const H = { socket: [], groupLoaded: [], view: [], loc: [], message: [] }; // hooks for game.js / hunt.js
+fetch('/api/config').then(r => r.json()).then(c => { S.minPingDelayMs = c.minPingDelayMs; }).catch(() => {});
 
 // ---------- api ----------
 async function api(path, opts = {}) {
@@ -15,22 +19,23 @@ async function api(path, opts = {}) {
   else if (opts.body) { o.body = JSON.stringify(opts.body); o.headers['content-type'] = 'application/json'; }
   const r = await fetch(path, o);
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) { const e = new Error(j.error || 'Something went wrong'); e.status = r.status; throw e; }
+  if (!r.ok) { const e = new Error(j.error || 'Something went wrong'); e.status = r.status; e.data = j; throw e; }
   return j;
 }
 
-// ---------- feedback: toast, sound, notification ----------
+// ---------- feedback ----------
 function toast(msg, cls = '') {
   const t = document.createElement('div'); t.className = 'toast ' + cls; t.textContent = msg;
   $('#toasts').appendChild(t); setTimeout(() => t.remove(), 3500);
 }
 let audioCtx;
-function sonar() {
+function sonar(kind = 'ping') {
   try {
     audioCtx ||= new (window.AudioContext || window.webkitAudioContext)();
-    [0, 0.35, 0.7].forEach((d, i) => {
+    const notes = kind === 'pop' ? [[0, 880]] : [[0, 1100], [0.35, 950], [0.7, 800]];
+    notes.forEach(([d, f]) => {
       const o = audioCtx.createOscillator(), g = audioCtx.createGain();
-      o.type = 'sine'; o.frequency.setValueAtTime(1100 - i * 150, audioCtx.currentTime + d);
+      o.type = 'sine'; o.frequency.setValueAtTime(f, audioCtx.currentTime + d);
       g.gain.setValueAtTime(0.0001, audioCtx.currentTime + d);
       g.gain.exponentialRampToValueAtTime(0.4, audioCtx.currentTime + d + 0.02);
       g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + d + 0.3);
@@ -38,17 +43,58 @@ function sonar() {
     });
   } catch (_) {}
 }
-// System notification. Installed apps (Android, and iOS 16.4+ Home Screen apps) need the service worker
-// to show it; plain new Notification() is the fallback for desktop browsers.
 async function notify(title, body, url = '/') {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
-  if (document.visibilityState === 'visible' && document.hasFocus()) return; // the in-app banner already shows it
+  if (document.visibilityState === 'visible' && document.hasFocus()) return;
   const opts = { body, icon: '/icons/icon-192.png', badge: '/icons/icon-96.png', tag: 'peekasnap-' + title, vibrate: [200, 100, 200], data: { url } };
   try { const reg = await navigator.serviceWorker?.getRegistration(); if (reg) return reg.showNotification(title, opts); } catch (_) {}
   try { new Notification(title, opts); } catch (_) {}
 }
+let bannerTimer;
+function banner(html, ms = 6000) {
+  const b = $('#ping-banner'); b.innerHTML = html; b.classList.remove('hidden');
+  clearTimeout(bannerTimer); bannerTimer = setTimeout(() => b.classList.add('hidden'), ms);
+  b.onclick = () => b.classList.add('hidden');
+}
+const avatarHtml = (u, cls = '') => u ? `<span class="avatar ${cls}" style="background:${u.color}">${esc((u.name || '?')[0].toUpperCase())}</span>` : '';
+const fmtTime = t => new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+function ago(t) {
+  const s = Math.max(0, (Date.now() - t) / 1000);
+  if (s < 60) return 'now'; if (s < 3600) return Math.floor(s / 60) + 'm'; if (s < 86400) return Math.floor(s / 3600) + 'h';
+  return Math.floor(s / 86400) + 'd';
+}
+function fmtIn(ms) {
+  if (ms <= 0) return 'now';
+  const s = Math.round(ms / 1000); if (s < 60) return s + 's';
+  const m = Math.floor(s / 60); if (m < 60) return m + 'm ' + String(s % 60).padStart(2, '0') + 's';
+  const h = Math.floor(m / 60); if (h < 24) return h + 'h ' + (m % 60) + 'm';
+  return Math.floor(h / 24) + 'd ' + (h % 24) + 'h';
+}
 
-// ---------- installed app: service worker, Web Push, Home Screen prompt ----------
+// ---------- geolocation ----------
+let watchId = null, lastShare = 0;
+function getLoc(timeout = 12000) {
+  return new Promise((res, rej) => {
+    if (!navigator.geolocation) return rej(new Error('No GPS on this device'));
+    if (watchId != null && S.myLoc && Date.now() - S.myLoc.t < 120000) return res(S.myLoc);
+    navigator.geolocation.getCurrentPosition(p => { setMyLoc(p); res(S.myLoc); }, e => {
+      if (e.code !== 1 && S.myLoc && Date.now() - S.myLoc.t < 60000) return res(S.myLoc);
+      rej(new Error(e.code === 1 ? 'Location permission denied' : 'Could not get your location'));
+    }, { enableHighAccuracy: true, timeout, maximumAge: 5000 });
+  });
+}
+function setMyLoc(p) {
+  S.myLoc = { lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy, t: Date.now() };
+  updateMeMarker(); H.loc?.forEach(f => f(S.myLoc));
+  if (S.user?.shareLocation && Date.now() - lastShare > 30000) { lastShare = Date.now(); api('/api/me/location', { body: { lat: S.myLoc.lat, lng: S.myLoc.lng } }).catch(() => {}); }
+}
+H.loc = [];
+function startWatch() {
+  if (watchId != null || !navigator.geolocation) return;
+  watchId = navigator.geolocation.watchPosition(setMyLoc, () => {}, { enableHighAccuracy: true, maximumAge: 10000 });
+}
+
+// ---------- installed app: service worker, push, Home Screen prompt ----------
 const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 const isIOSSafari = isIOS && /safari/i.test(navigator.userAgent) && !/crios|fxios|edgios|opios|gsa\//i.test(navigator.userAgent);
@@ -61,50 +107,43 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
   });
 }
 const b64ToU8 = b => { const p = '='.repeat((4 - b.length % 4) % 4); const r = atob((b + p).replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from(r, c => c.charCodeAt(0)); };
-// subscribe this device to Web Push so pings arrive even when the app is closed (where the platform allows)
 async function ensurePush() {
   try {
     if (!S.token || !('PushManager' in window) || Notification.permission !== 'granted') return false;
     const reg = swReg || await navigator.serviceWorker.ready;
     let sub = await reg.pushManager.getSubscription();
-    if (!sub) {
-      const { publicKey } = await api('/api/push/key');
-      sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToU8(publicKey) });
-    }
+    if (!sub) { const { publicKey } = await api('/api/push/key'); sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToU8(publicKey) }); }
     await api('/api/push/subscribe', { body: { subscription: sub.toJSON() } });
     return true;
   } catch (_) { return false; }
 }
 async function enableAlerts() {
-  sonar(); // also unlocks audio on iOS
+  sonar('pop');
   if (!('Notification' in window)) {
     if (isIOS && !isStandalone()) { showInstallCard(true); return toast('On iPhone, add PeekaSnap to your Home Screen first to get alerts'); }
     return toast('This browser only supports in-app alerts');
   }
   const p = await Notification.requestPermission();
-  if (p !== 'granted') return toast('Alerts blocked - you will still get in-app pings');
+  if (p !== 'granted') return toast('Alerts blocked - you will still get in-app alerts');
   const pushed = await ensurePush();
-  toast(pushed ? 'Ping alerts on 🔔 (even when the app is closed)' : 'Ping alerts on 🔔 while the app is open', 'y');
-  hideInstallCard(); renderGroups();
+  toast(pushed ? 'Alerts on 🔔 (even when the app is closed)' : 'Alerts on 🔔 while the app is open', 'y');
+  hideInstallCard(); renderProfile();
 }
-
 let deferredPrompt = null;
 addEventListener('beforeinstallprompt', e => { e.preventDefault(); deferredPrompt = e; if (S.user) maybeShowInstallCard(); renderInstallBtn(); });
 addEventListener('appinstalled', () => { deferredPrompt = null; hideInstallCard(); toast('Installed! Open PeekaSnap from your Home Screen 📲', 'y'); });
 const canInstall = () => !isStandalone() && (deferredPrompt || isIOSSafari);
 function renderInstallBtn() { $('#install-btn')?.classList.toggle('hidden', !canInstall()); }
 function maybeShowInstallCard() {
-  const snooze = +localStorage.getItem('ps_install_snooze') || 0;
-  if (Date.now() < snooze) return;
+  if (Date.now() < (+localStorage.getItem('ps_install_snooze') || 0)) return;
   if (canInstall()) return showInstallCard();
-  // already on the Home Screen but alerts are off: offer to turn them on (iOS requires a tap for this)
   if (isStandalone() && 'Notification' in window && Notification.permission === 'default') showAlertsCard();
 }
 function showInstallCard(force) {
   if (!canInstall() && !force) return;
   const ios = isIOS && !deferredPrompt;
   $('#install-title').textContent = 'Add PeekaSnap to your Home Screen';
-  $('#install-body').textContent = ios ? 'Opens full-screen like an app and lets PeekaSnap send ping alerts:' : 'Full-screen, one tap to open, and ping alerts like a real app.';
+  $('#install-body').textContent = ios ? 'Opens full-screen like an app and lets PeekaSnap send alerts:' : 'Full-screen, one tap to open, and snap + game alerts like a real app.';
   $('#install-ios').classList.toggle('hidden', !ios);
   $('#install-card').classList.toggle('ios-arrow', ios && !/ipad/i.test(navigator.userAgent));
   $('#install-go').classList.toggle('hidden', ios);
@@ -114,13 +153,13 @@ function showInstallCard(force) {
     deferredPrompt.prompt();
     const { outcome } = await deferredPrompt.userChoice.catch(() => ({}));
     deferredPrompt = null; hideInstallCard(); renderInstallBtn();
-    if (outcome !== 'accepted') toast('No problem - it\'s in the Groups menu any time');
+    if (outcome !== 'accepted') toast("No problem - it's in your Profile any time");
   };
   $('#install-card').classList.remove('hidden');
 }
 function showAlertsCard() {
-  $('#install-title').textContent = 'Turn on ping alerts 🔔';
-  $('#install-body').textContent = 'Get a buzz when a ping fires, someone moves the object, or it gets found, even when PeekaSnap is closed.';
+  $('#install-title').textContent = 'Turn on alerts 🔔';
+  $('#install-body').textContent = 'Get a buzz for new snaps, chats, friend requests and game pings, even when PeekaSnap is closed.';
   $('#install-ios').classList.add('hidden'); $('#install-card').classList.remove('ios-arrow');
   $('#install-go').classList.remove('hidden'); $('#install-go').textContent = 'Turn on';
   $('#install-go').onclick = enableAlerts;
@@ -129,164 +168,104 @@ function showAlertsCard() {
 function hideInstallCard() { $('#install-card').classList.add('hidden'); }
 $('#install-later').onclick = $('#install-x').onclick = () => { localStorage.setItem('ps_install_snooze', Date.now() + 3 * 864e5); hideInstallCard(); };
 $('#install-btn').onclick = () => { closeSheets(); showInstallCard(true); };
-let bannerTimer;
-function banner(html, ms = 6000) {
-  const b = $('#ping-banner'); b.innerHTML = html; b.classList.remove('hidden');
-  clearTimeout(bannerTimer); bannerTimer = setTimeout(() => b.classList.add('hidden'), ms);
-  b.onclick = () => b.classList.add('hidden');
-}
-
-// ---------- geolocation ----------
-function getLoc(timeout = 12000) {
-  return new Promise((res, rej) => {
-    if (!navigator.geolocation) return rej(new Error('No GPS on this device'));
-    // the live GPS watch only reports when you move, so its latest fix is current (cap at 2 min to be safe)
-    if (watchId != null && S.myLoc && Date.now() - S.myLoc.t < 120000) return res(S.myLoc);
-    navigator.geolocation.getCurrentPosition(p => {
-      S.myLoc = { lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy, t: Date.now() };
-      updateMeMarker(); res(S.myLoc);
-    }, e => {
-      if (e.code !== 1 && S.myLoc && Date.now() - S.myLoc.t < 60000) return res(S.myLoc);
-      rej(new Error(e.code === 1 ? 'Location permission denied' : 'Could not get your location'));
-    }, { enableHighAccuracy: true, timeout, maximumAge: 5000 });
-  });
-}
-let watchId = null;
-function startWatch() {
-  if (watchId != null || !navigator.geolocation) return;
-  watchId = navigator.geolocation.watchPosition(p => {
-    S.myLoc = { lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy, t: Date.now() }; updateMeMarker();
-  }, () => {}, { enableHighAccuracy: true, maximumAge: 10000 });
-}
 
 // ---------- boot / auth ----------
-S.minPingDelayMs = 5 * 60000;
-fetch('/api/config').then(r => r.json()).then(c => { S.minPingDelayMs = c.minPingDelayMs; }).catch(() => {});
 async function boot() {
   if (!S.token) return showOnboard();
-  try {
-    const me = await api('/api/me');
-    S.user = me.user; S.groups = me.groups;
-  } catch (e) { if (e.status === 401) { localStorage.removeItem('ps_token'); return showOnboard(); } toast(e.message); return; }
+  try { const me = await api('/api/me'); S.user = me.user; S.groups = me.groups; }
+  catch (e) { if (e.status === 401) { localStorage.removeItem('ps_token'); return showOnboard(); } toast(e.message); return; }
   $('#onboard').classList.add('hidden'); $('#app').classList.remove('hidden');
-  const me = $('#me-btn'); me.textContent = S.user.name[0].toUpperCase(); me.style.background = S.user.color;
+  renderMe();
   connectSocket();
   if (!S.groups.find(g => g.id === S.groupId)) S.groupId = S.groups[0]?.id || null;
-  if (S.groupId) await loadGroup(); else { renderAll(); openSheet('groups'); }
+  await Promise.all([loadGroup(), refreshFriends(), refreshChats(), refreshInbox(), refreshStories()]);
   setView(location.hash.slice(1) || 'camera');
-  startWatch();
-  ensurePush();
+  startWatch(); ensurePush();
   setTimeout(maybeShowInstallCard, 2500);
 }
 function showOnboard() { $('#onboard').classList.remove('hidden'); $('#app').classList.add('hidden'); setTimeout(() => $('#signup-name').focus(), 50); }
+$('#signup-name').oninput = e => { const u = $('#signup-username'); if (!u.dataset.touched) u.value = e.target.value.toLowerCase().replace(/[^a-z0-9_.]/g, '').slice(0, 20); };
+$('#signup-username').oninput = e => { e.target.dataset.touched = 1; e.target.value = e.target.value.toLowerCase().replace(/[^a-z0-9_.]/g, ''); };
 $('#signup-form').onsubmit = async e => {
   e.preventDefault();
   try {
-    const r = await api('/api/signup', { body: { name: $('#signup-name').value } });
+    const r = await api('/api/signup', { body: { name: $('#signup-name').value, username: $('#signup-username').value } });
     S.token = r.token; localStorage.setItem('ps_token', r.token);
-    const code = new URLSearchParams(location.search).get('join');
-    if (code) { try { const j = await api('/api/groups/join', { body: { code } }); S.groupId = j.group.id; localStorage.setItem('ps_group', S.groupId); } catch (_) {} }
+    const q = new URLSearchParams(location.search);
+    if (q.get('join')) { try { const j = await api('/api/groups/join', { body: { code: q.get('join') } }); S.groupId = j.group.id; localStorage.setItem('ps_group', S.groupId); } catch (_) {} }
+    if (q.get('add')) { try { await api('/api/friends/request', { body: { username: q.get('add') } }); } catch (_) {} }
     boot();
   } catch (err) { toast(err.message); }
 };
+function renderMe() { const me = $('#me-btn'); me.textContent = S.user.name[0].toUpperCase(); me.style.background = S.user.color; }
 
 function connectSocket() {
   if (S.socket) return;
   const s = S.socket = io({ auth: { token: S.token } });
-  s.on('connect', () => { if (S.groupId) loadGroup(); });
+  s.on('connect', () => { loadGroup(); refreshChats(); refreshInbox(); });
   s.on('message', m => {
-    if (m.groupId !== S.groupId) return;
-    S.messages.push(m); renderChat();
-    if (S.view !== 'chat') $('#chat-dot').classList.remove('hidden');
+    if (S.thread && m.chatId === S.thread.chatId) {
+      if (!S.threadMsgs.some(x => x.id === m.id)) S.threadMsgs.push(m);
+      if (m.type === 'snap' && !m.snap) return openThread(S.thread.chatId, true); // group snaps need per-viewer state
+      renderThread(); if (m.userId !== S.user.id) markThreadRead();
+    }
+    if (m.groupId && m.groupId === S.groupId && m.chatId === S.groupId) { S.messages.push(m); }
+    if (m.userId && m.userId !== S.user.id) {
+      if ((!S.thread || S.thread.chatId !== m.chatId) && !String(m.chatId).startsWith('hunt_')) { $('#chat-dot').classList.remove('hidden'); if (m.type === 'snap') sonar('pop'); }
+      if (m.type === 'snap') refreshInbox();
+    }
+    H.message?.forEach(f => f(m));
+    debounceChats();
   });
-  s.on('hide', h => {
-    if (h.groupId !== S.groupId) return;
-    const i = S.hides.findIndex(x => x.id === h.id);
-    if (i >= 0) S.hides[i] = h; else S.hides.unshift(h);
-    renderStories(); renderMapHides(); if (openStoryId === h.id) renderStory();
-    refreshBoard();
+  s.on('message-deleted', d => {
+    if (S.thread?.chatId === d.chatId) { S.threadMsgs = S.threadMsgs.filter(x => x.id !== d.id); renderThread(); }
+    S.messages = S.messages.filter(x => x.id !== d.id); if (d.forEveryone) refreshInbox(); debounceChats();
   });
-  s.on('ping', p => {
-    const g = S.groups.find(x => x.id === (S.hides.find(h => h.id === p.hideId)?.groupId)) ;
-    const mine = p.hider?.id === S.user.id;
-    sonar(); navigator.vibrate?.([200, 100, 200, 100, 400]);
-    banner(`<div class="radar">📡</div><div class="grow">PING ${p.n}/${p.of} · ${esc(p.object)}<div class="muted">${mine ? 'Seekers got a new hint. You can move or rename it once before the next ping!' : `Hint circle shrank to ${p.hint.radius} m. Hot/cold unlocked!`}</div></div>${mine ? '<button class="banner-btn" id="banner-move">🔀 Move it</button>' : ''}`, mine ? 12000 : 6000);
-    if (mine) $('#banner-move').onclick = ev => { ev.stopPropagation(); $('#ping-banner').classList.add('hidden'); openMoveSheet(p.hideId); };
-    notify(`📡 Ping ${p.n}/${p.of}: ${p.object}`, mine ? 'Seekers got a new hint. Move or rename it before the next ping!' : `It's within ${p.hint.radius} m of the new circle. Tap to hunt!`, '/#map');
-    if (!mine && S.view === 'map') focusHide(p.hideId);
+  s.on('chat-deleted', d => { if (S.thread?.chatId === d.chatId) closeThread(); else debounceChats(); });
+  s.on('typing', d => { if (S.thread?.chatId === d.chatId) showTyping(d.user); });
+  s.on('read', d => { if (S.thread?.chatId === d.chatId) { S.threadReads[d.userId] = d.at; renderThread(); } debounceChats(); });
+  s.on('snap-opened', d => { toast(`${d.by.name} ${d.replay ? 'replayed' : 'opened'} your Snap 👀`); debounceChats(); });
+  s.on('snap-state', d => { if (S.thread?.chatId === d.chatId) openThread(d.chatId, true); debounceChats(); });
+  s.on('friends', d => {
+    refreshFriends(); refreshChats();
+    if (d.type === 'request') { toast(`👋 ${d.user.name} added you!`, 'y'); notify('👋 Friend request', `${d.user.name} added you`); }
+    if (d.type === 'accepted') toast(`🤝 You and ${d.user.name} are friends`, 'y');
   });
-  s.on('found', f => {
-    banner(`<div class="radar">🏆</div><div class="grow">${esc(f.finder.name)} found the ${esc(f.object)}!</div>`);
-    notify('🏆 Found!', `${f.finder.name} found the ${f.object}`);
-  });
-  s.on('moved', m => {
-    if (m.hider.id === S.user.id) return;
-    const bits = [m.moved && `moved the ${esc(m.renamed ? m.oldName : m.object)}`, m.renamed && `renamed it to "${esc(m.object)}"`, m.newPhoto && 'posted a new photo'].filter(Boolean).join(' and ');
-    sonar(); navigator.vibrate?.([100, 60, 100]);
-    banner(`<div class="radar">🔀</div><div class="grow">${esc(m.hider.name)} ${bits}!<div class="muted">${m.moved ? 'The old hint circle is out of date. Wait for the next ping.' : 'Same spot, new name.'}</div></div>`);
-    notify('🔀 It moved!', `${m.hider.name} ${bits.replace(/&quot;/g, '"')}`);
-  });
-  s.on('claim', c => { toast(`${c.user.name} says they found your ${c.object}! Review it 👀`, 'y'); notify('Find claim', `${c.user.name} says they found your ${c.object}`); });
+  s.on('story', () => { refreshStories(); $('#story-dot').classList.remove('hidden'); });
+  s.on('friend-loc', d => updateFriendMarker(d));
+  H.socket.forEach(f => f(s));
 }
+let chatsT; function debounceChats() { clearTimeout(chatsT); chatsT = setTimeout(() => { refreshChats(); refreshInbox(); }, 300); }
 
 async function loadGroup() {
-  if (!S.groupId) return;
+  if (!S.groupId) { S.group = null; S.hides = []; S.messages = []; S.leaderboard = []; H.groupLoaded.forEach(f => f()); return; }
   try {
     const r = await api('/api/groups/' + S.groupId);
     S.group = r.group; S.hides = r.hides; S.messages = r.messages; S.leaderboard = r.leaderboard;
     localStorage.setItem('ps_group', S.groupId);
-  } catch (e) { toast(e.message); S.groupId = null; S.group = null; }
-  renderAll();
+  } catch (e) { S.groupId = null; S.group = null; }
+  H.groupLoaded.forEach(f => f());
 }
 async function refreshMe() { const me = await api('/api/me'); S.groups = me.groups; S.socket?.emit('refresh-groups'); }
-let boardT; function refreshBoard() { clearTimeout(boardT); boardT = setTimeout(async () => { if (!S.groupId) return; const r = await api('/api/groups/' + S.groupId); S.leaderboard = r.leaderboard; renderBoard(); }, 400); }
 
 // ---------- views ----------
+const VIEWS = ['map', 'chat', 'camera', 'stories', 'play'];
+const TITLES = { map: 'Snap Map', chat: 'Chat', camera: '', stories: 'Stories', play: 'Play' };
 function setView(v) {
-  if (!['map', 'camera', 'chat'].includes(v)) v = 'camera';
+  if (!VIEWS.includes(v)) v = 'camera';
   S.view = v; history.replaceState(null, '', '#' + v);
-  ['map', 'camera', 'chat'].forEach(x => $('#view-' + x).classList.toggle('hidden', x !== v));
+  VIEWS.forEach(x => $('#view-' + x).classList.toggle('hidden', x !== v));
   $$('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === v));
+  $('#app').dataset.view = v;
+  $('#top-title').textContent = TITLES[v];
+  $('#cam-flip').classList.toggle('hidden', v !== 'camera');
   if (v === 'camera') startCamera(); else stopCamera();
-  if (v === 'map') { initMap(); setTimeout(() => { map.invalidateSize(); fitGroup(); }, 50); }
-  if (v === 'chat') { $('#chat-dot').classList.add('hidden'); scrollChat(); }
+  if (v === 'map') initMap();
+  if (v === 'chat') { $('#chat-dot').classList.add('hidden'); refreshChats(); }
+  if (v === 'stories') { $('#story-dot').classList.add('hidden'); refreshStories(); }
+  H.view.forEach(f => f(v));
 }
 $$('.nav-btn').forEach(b => b.onclick = () => setView(b.dataset.view));
-
-function renderAll() {
-  $('#group-name').textContent = S.group ? S.group.name : 'Join or create a group';
-  $('#group-pill').firstChild.textContent = (S.group?.emoji || '👀') + ' ';
-  renderStories(); renderChat(); renderMapHides(); renderBoard(); renderGroups();
-}
-const activeHides = () => S.hides.filter(h => h.status === 'active');
-function fmtIn(ms) {
-  if (ms <= 0) return 'now';
-  const s = Math.round(ms / 1000); if (s < 60) return s + 's';
-  const m = Math.floor(s / 60); if (m < 60) return m + 'm ' + String(s % 60).padStart(2, '0') + 's';
-  const h = Math.floor(m / 60); if (h < 24) return h + 'h ' + (m % 60) + 'm';
-  return Math.floor(h / 24) + 'd ' + (h % 24) + 'h';
-}
-const fmtTime = t => new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-function renderStories() {
-  const act = activeHides(), recent = S.hides.filter(h => h.status !== 'active').slice(0, 6);
-  const card = h => `<button class="story-card" data-hide="${h.id}"><div class="story-ring ${h.status !== 'active' ? 'done' : ''}"><img src="${h.photo}" alt=""></div>
-    <div class="lbl">${esc(h.isHider ? 'Your ' + h.object : h.object)}</div><div class="cd" data-cd="${h.id}">${cdText(h)}</div></button>`;
-  const html = act.map(card).join('');
-  $('#cam-stories').innerHTML = html;
-  $('#map-stories').innerHTML = html;
-  $('#chat-stories').innerHTML = S.group ? `<button class="story-card" id="new-hide-story"><div class="story-new">＋</div><div class="lbl">Hide one</div></button>` + html + recent.map(card).join('') : '';
-  $$('[data-hide]').forEach(b => b.onclick = () => openStory(b.dataset.hide));
-  const nh = $('#new-hide-story'); if (nh) nh.onclick = () => setView('camera');
-}
-function cdText(h) {
-  if (h.status === 'found') return '✅ found';
-  if (h.status !== 'active') return h.status === 'escaped' ? '🏃 escaped' : 'ended';
-  return h.nextPingAt ? '📡 ' + fmtIn(h.nextPingAt - Date.now()) : '⏳ last call';
-}
-setInterval(() => {
-  $$('[data-cd]').forEach(el => { const h = S.hides.find(x => x.id === el.dataset.cd); if (h) el.textContent = cdText(h); });
-  if (openStoryId) renderCountdown();
-}, 1000);
 
 // ---------- camera ----------
 let stream = null, facing = 'environment';
@@ -294,23 +273,28 @@ async function startCamera() {
   if (stream || !navigator.mediaDevices?.getUserMedia) { if (!stream) $('#cam-fallback').classList.remove('hidden'); return; }
   try {
     stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facing, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
-    if (S.view !== 'camera') return stopCamera();
+    if (S.view !== 'camera' || anyOverlayOpen()) return stopCamera();
     $('#cam-video').srcObject = stream; $('#cam-fallback').classList.add('hidden');
+    $('#cam-video').classList.toggle('mirror', facing === 'user');
   } catch (_) { $('#cam-fallback').classList.remove('hidden'); }
 }
 function stopCamera() { stream?.getTracks().forEach(t => t.stop()); stream = null; }
+const anyOverlayOpen = () => $$('.overlay').some(o => !o.classList.contains('hidden'));
 $('#cam-flip').onclick = () => { facing = facing === 'environment' ? 'user' : 'environment'; stopCamera(); startCamera(); };
 $('#shutter').onclick = () => {
   const v = $('#cam-video');
-  if (!stream || !v.videoWidth) return $('#file-capture').click(); // native camera fallback
+  if (!stream || !v.videoWidth) return $('#file-capture').click();
   const c = document.createElement('canvas'); c.width = v.videoWidth; c.height = v.videoHeight;
-  c.getContext('2d').drawImage(v, 0, 0);
-  c.toBlob(b => setSnap(b), 'image/jpeg', 0.85);
+  const g = c.getContext('2d'); if (facing === 'user') { g.translate(c.width, 0); g.scale(-1, 1); }
+  g.drawImage(v, 0, 0);
+  c.toBlob(b => openEditor(b), 'image/jpeg', 0.9);
 };
 $('#cam-upload').onclick = () => $('#file-pick').click();
-['#file-capture', '#file-pick'].forEach(s => $(s).onchange = e => { const f = e.target.files[0]; if (f) setSnap(f); e.target.value = ''; });
-
-async function shrink(blob, max = 1600) { // resize big phone photos before upload
+['#file-capture', '#file-pick'].forEach(s => $(s).onchange = e => { const f = e.target.files[0]; if (f) openEditor(f); e.target.value = ''; });
+$('#cam-inbox').onclick = () => { if (S.inbox.length) openSnap(S.inbox[0].id); else toast('No new Snaps'); };
+$('#hide-mode-x').onclick = () => setHideMode(false);
+function setHideMode(on) { S.hideMode = on; $('#hide-mode-pill').classList.toggle('hidden', !on); }
+async function shrink(blob, max = 1600) {
   try {
     const bmp = await createImageBitmap(blob);
     const k = Math.min(1, max / Math.max(bmp.width, bmp.height));
@@ -320,112 +304,461 @@ async function shrink(blob, max = 1600) { // resize big phone photos before uplo
     return await new Promise(r => c.toBlob(r, 'image/jpeg', 0.85));
   } catch (_) { return blob; }
 }
-function setSnap(blob) {
-  S.snap = blob;
-  const url = URL.createObjectURL(blob);
-  $('#preview-img').src = url; $('#hide-thumb').src = url;
-  $('#preview').classList.remove('hidden');
+
+// ---------- snap editor: caption, drawing, stickers, timer ----------
+const ED = { blob: null, strokes: [], drawing: false, pen: false, color: '#FF2D46', timer: 5, caption: null, stickers: [] };
+const COLORS = ['#FF2D46', '#FFFFFF', '#000000', '#FFD400', '#22D37F', '#4FB7FF', '#B15CFF', '#FF8A00'];
+const STICKERS = ['😂', '🔥', '👀', '🫣', '💀', '😎', '❤️', '🏃', '🎯', '📍', '🦆', '👻', '💯', '🙈', '⭐', '🎉'];
+const TIMERS = [1, 2, 3, 5, 7, 10, 0];
+function openEditor(blob) {
+  ED.blob = blob; ED.strokes = []; ED.caption = null; ED.stickers = []; ED.pen = false;
+  $('#ed-img').src = URL.createObjectURL(blob);
+  $('#ed-layer').innerHTML = ''; $('#ed-colors').classList.add('hidden'); $('#ed-stickers').classList.add('hidden');
+  $('#ed-undo').classList.add('hidden'); $('#ed-pen').classList.remove('on');
+  $('#ed-hide').classList.toggle('pulse', S.hideMode);
+  $('#ed-timer-val').textContent = ED.timer || '∞';
+  stopCamera(); $('#editor').classList.remove('hidden');
+  requestAnimationFrame(sizeDrawCanvas);
 }
-$('#preview-close').onclick = $('#preview-retake').onclick = () => { $('#preview').classList.add('hidden'); S.snap = null; };
-$('#preview-hide').onclick = () => {
+function closeEditor() { $('#editor').classList.add('hidden'); if (S.view === 'camera') startCamera(); }
+$('#ed-close').onclick = closeEditor;
+function sizeDrawCanvas() {
+  const st = $('#ed-stage'), c = $('#ed-draw'), r = st.getBoundingClientRect(), dpr = devicePixelRatio || 1;
+  c.width = r.width * dpr; c.height = r.height * dpr; redraw();
+}
+function redraw() {
+  const c = $('#ed-draw'), g = c.getContext('2d'), dpr = devicePixelRatio || 1;
+  g.clearRect(0, 0, c.width, c.height); g.lineCap = g.lineJoin = 'round';
+  for (const s of ED.strokes) { g.strokeStyle = s.color; g.lineWidth = 7 * dpr; g.beginPath(); s.pts.forEach(([x, y], i) => i ? g.lineTo(x * c.width, y * c.height) : g.moveTo(x * c.width, y * c.height)); g.stroke(); }
+}
+$('#ed-colors').innerHTML = COLORS.map(c => `<button data-c="${c}" style="background:${c}"></button>`).join('');
+$$('#ed-colors button').forEach(b => b.onclick = () => { ED.color = b.dataset.c; $$('#ed-colors button').forEach(x => x.classList.toggle('on', x === b)); });
+$('#ed-pen').onclick = () => { ED.pen = !ED.pen; $('#ed-pen').classList.toggle('on', ED.pen); $('#ed-colors').classList.toggle('hidden', !ED.pen); $('#ed-stickers').classList.add('hidden'); };
+$('#ed-undo').onclick = () => { ED.strokes.pop(); redraw(); $('#ed-undo').classList.toggle('hidden', !ED.strokes.length); };
+const dc = $('#ed-draw');
+const relPt = e => { const r = dc.getBoundingClientRect(); return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height]; };
+dc.addEventListener('pointerdown', e => { if (!ED.pen) return; ED.drawing = true; ED.strokes.push({ color: ED.color, pts: [relPt(e)] }); dc.setPointerCapture(e.pointerId); });
+dc.addEventListener('pointermove', e => { if (!ED.drawing) return; ED.strokes[ED.strokes.length - 1].pts.push(relPt(e)); redraw(); });
+dc.addEventListener('pointerup', () => { if (ED.drawing) { ED.drawing = false; $('#ed-undo').classList.remove('hidden'); } });
+function makeDraggable(el, item) {
+  let sy, sx, oy, ox, moved;
+  el.addEventListener('pointerdown', e => { if (ED.pen) return; e.stopPropagation(); sy = e.clientY; sx = e.clientX; oy = item.y; ox = item.x; moved = false; el.setPointerCapture(e.pointerId); });
+  el.addEventListener('pointermove', e => {
+    if (sy == null) return; const r = $('#ed-stage').getBoundingClientRect();
+    item.y = Math.min(0.95, Math.max(0.05, oy + (e.clientY - sy) / r.height)); if (item.x != null) item.x = Math.min(0.95, Math.max(0.05, ox + (e.clientX - sx) / r.width));
+    if (Math.abs(e.clientY - sy) + Math.abs(e.clientX - sx) > 4) moved = true; place(el, item);
+  });
+  el.addEventListener('pointerup', () => { sy = null; if (!moved) el.dispatchEvent(new Event('tapped')); });
+}
+function place(el, item) { el.style.top = item.y * 100 + '%'; if (item.x != null) el.style.left = item.x * 100 + '%'; }
+$('#ed-text').onclick = () => {
+  if (ED.caption) { ED.caption.el.querySelector('input').focus(); return; }
+  const item = ED.caption = { y: 0.62, text: '' };
+  const el = item.el = document.createElement('div'); el.className = 'caption-bar';
+  el.innerHTML = '<input maxlength="80" placeholder="" enterkeyhint="done">';
+  const inp = el.querySelector('input');
+  inp.oninput = () => (item.text = inp.value);
+  inp.onblur = () => { if (!inp.value.trim()) { el.remove(); ED.caption = null; } };
+  inp.onkeydown = e => { if (e.key === 'Enter') inp.blur(); };
+  el.addEventListener('tapped', () => inp.focus());
+  makeDraggable(el, item); place(el, item); $('#ed-layer').appendChild(el); inp.focus();
+};
+$('#ed-stickers').innerHTML = STICKERS.map(s => `<button>${s}</button>`).join('');
+$('#ed-sticker').onclick = () => { $('#ed-stickers').classList.toggle('hidden'); ED.pen = false; $('#ed-pen').classList.remove('on'); $('#ed-colors').classList.add('hidden'); };
+$$('#ed-stickers button').forEach(b => b.onclick = () => {
+  const item = { e: b.textContent, x: 0.5, y: 0.4 }; ED.stickers.push(item);
+  const el = item.el = document.createElement('div'); el.className = 'sticker'; el.textContent = item.e;
+  el.addEventListener('tapped', () => { el.remove(); ED.stickers = ED.stickers.filter(s => s !== item); }); // tap a sticker to remove it
+  makeDraggable(el, item); place(el, item); $('#ed-layer').appendChild(el); $('#ed-stickers').classList.add('hidden');
+});
+$('#ed-timer').onclick = () => { ED.timer = TIMERS[(TIMERS.indexOf(ED.timer) + 1) % TIMERS.length]; $('#ed-timer-val').textContent = ED.timer || '∞'; toast(ED.timer ? `Snap shows for ${ED.timer}s` : 'No time limit'); };
+// flatten photo + drawing + caption + stickers (what you see on screen, cropped like the stage) into one JPEG
+async function composeSnap() {
+  const st = $('#ed-stage').getBoundingClientRect();
+  const bmp = await createImageBitmap(ED.blob);
+  const W = Math.min(1080, Math.round(st.width * 3)), Hh = Math.round(W * st.height / st.width);
+  const c = document.createElement('canvas'); c.width = W; c.height = Hh; const g = c.getContext('2d');
+  g.fillStyle = '#000'; g.fillRect(0, 0, W, Hh);
+  const k = Math.max(W / bmp.width, Hh / bmp.height); // object-fit: cover
+  g.drawImage(bmp, (W - bmp.width * k) / 2, (Hh - bmp.height * k) / 2, bmp.width * k, bmp.height * k);
+  g.drawImage($('#ed-draw'), 0, 0, W, Hh);
+  const u = W / st.width;
+  if (ED.caption && ED.caption.text.trim()) {
+    const bh = 44 * u, y = ED.caption.y * Hh;
+    g.fillStyle = 'rgba(0,0,0,.6)'; g.fillRect(0, y - bh / 2, W, bh);
+    g.fillStyle = '#fff'; g.font = `600 ${19 * u}px -apple-system, Roboto, Helvetica, Arial, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText(ED.caption.text, W / 2, y);
+  }
+  g.textAlign = 'center'; g.textBaseline = 'middle'; g.font = `${64 * u}px "Noto Color Emoji", "Apple Color Emoji", sans-serif`;
+  ED.stickers.forEach(s => g.fillText(s.e, s.x * W, s.y * Hh));
+  return new Promise(r => c.toBlob(r, 'image/jpeg', 0.86));
+}
+$('#ed-story').onclick = async () => {
+  const fd = new FormData(); fd.append('photo', await composeSnap(), 'snap.jpg'); fd.append('story', '1'); fd.append('timer', ED.timer || 10);
+  try { await api('/api/snaps', { body: fd }); toast('Added to My Story ✨', 'y'); closeEditor(); refreshStories(); } catch (e) { toast(e.message); }
+};
+$('#ed-hide').onclick = async () => {
   if (!S.group) { toast('Join or create a group first'); return openSheet('groups'); }
-  $('#preview').classList.add('hidden'); openHideSheet();
+  const blob = await composeSnap(); $('#editor').classList.add('hidden'); setHideMode(false); openHideSheet(blob);
 };
+$('#ed-send').onclick = async () => { ED.composed = await composeSnap(); openSendSheet(); };
 
-// ---------- sheets ----------
-function openSheet(name) { $('#' + name + '-sheet').classList.remove('hidden'); if (name === 'groups') renderGroups(); if (name === 'board') renderBoard(); }
-function closeSheets() { $$('.sheet-wrap').forEach(s => s.classList.add('hidden')); }
-$$('[data-close]').forEach(b => b.onclick = closeSheets);
-$$('.sheet-wrap').forEach(w => w.onclick = e => { if (e.target === w) closeSheets(); });
-$('#group-pill').onclick = () => openSheet('groups');
-$('#board-btn').onclick = () => openSheet('board');
-$('#me-btn').onclick = () => { if (confirm(`Signed in as ${S.user.name}. Sign out on this device?`)) { localStorage.clear(); location.reload(); } };
-
-function renderGroups() {
-  $('#group-list').innerHTML = S.groups.length ? S.groups.map(g => `<button class="group-item ${g.id === S.groupId ? 'active' : ''}" data-g="${g.id}">
-    <span class="ge">${esc(g.emoji)}</span><span class="grow"><b>${esc(g.name)}</b><small>${g.memberCount} member${g.memberCount === 1 ? '' : 's'} · code ${g.code}</small></span>${g.id === S.groupId ? '✓' : ''}</button>`).join('')
-    : '<div class="empty">You\'re not in any groups yet. Create one or join with a code from a friend.</div>';
-  $$('[data-g]').forEach(b => b.onclick = async () => { S.groupId = b.dataset.g; closeSheets(); await loadGroup(); toast('Switched to ' + S.group.name); });
-  const nb = $('#notif-btn');
-  renderInstallBtn();
-  if (!('Notification' in window)) nb.textContent = isIOS && !isStandalone() ? '🔔 Alerts: add to Home Screen first' : '🔔 Alerts: in-app only on this browser';
-  else if (Notification.permission === 'granted') nb.textContent = '🔔 Ping alerts are on';
+// ---------- send to ----------
+const SEL = { to: new Set(), groups: new Set() };
+function openSendSheet() {
+  SEL.to.clear(); SEL.groups.clear(); $('#send-story').checked = false;
+  $('#send-friends').innerHTML = S.friends.friends.length ? S.friends.friends.map(f => `<label class="send-row"><input type="checkbox" data-to="${f.user.id}">${avatarHtml(f.user)}<span class="grow"><b>${esc(f.user.name)}</b> ${f.streak ? `<span class="streak">🔥${f.streak}</span>` : ''}<br><small>@${esc(f.user.username)}</small></span><i class="check"></i></label>`).join('')
+    : '<div class="empty dark">Add friends to send them Snaps. <button class="link-btn" id="send-add">Add friends</button></div>';
+  $('#send-groups').innerHTML = S.groups.length ? S.groups.map(g => `<label class="send-row"><input type="checkbox" data-g="${g.id}"><span class="avatar ge">${esc(g.emoji)}</span><span class="grow"><b>${esc(g.name)}</b><br><small>${g.memberCount} members</small></span><i class="check"></i></label>`).join('') : '<div class="empty dark">No groups yet</div>';
+  $$('#send-sheet input[type=checkbox]').forEach(cb => cb.onchange = () => {
+    if (cb.dataset.to) cb.checked ? SEL.to.add(cb.dataset.to) : SEL.to.delete(cb.dataset.to);
+    if (cb.dataset.g) cb.checked ? SEL.groups.add(cb.dataset.g) : SEL.groups.delete(cb.dataset.g);
+    renderSendSummary();
+  });
+  $('#send-add')?.addEventListener('click', () => { closeSheets(); openFriends(); });
+  renderSendSummary(); $('#send-sheet').classList.remove('hidden');
 }
-$('#join-form').onsubmit = async e => {
-  e.preventDefault(); $('#groups-err').textContent = '';
-  try { const r = await api('/api/groups/join', { body: { code: $('#join-code').value } }); S.groupId = r.group.id; $('#join-code').value = '';
-    await refreshMe(); await loadGroup(); closeSheets(); toast('Joined ' + r.group.name + ' 🎉', 'y'); }
-  catch (err) { $('#groups-err').textContent = err.message; }
-};
-$('#create-form').onsubmit = async e => {
-  e.preventDefault(); $('#groups-err').textContent = '';
-  try { const r = await api('/api/groups', { body: { name: $('#create-name').value, emoji: $('#create-emoji').value } }); S.groupId = r.group.id; $('#create-name').value = '';
-    await refreshMe(); await loadGroup(); closeSheets(); toast(`Group created! Invite code: ${r.group.code}`, 'y'); setView('chat'); }
-  catch (err) { $('#groups-err').textContent = err.message; }
-};
-$('#notif-btn').onclick = enableAlerts;
-
-function renderBoard() {
-  $('#board-list').innerHTML = S.leaderboard.length ? S.leaderboard.map((r, i) => `<div class="board-row"><span class="rank">${['🥇', '🥈', '🥉'][i] || i + 1}</span>
-    <span class="avatar" style="background:${r.user.color}">${esc(r.user.name[0].toUpperCase())}</span>
-    <span class="grow"><b>${esc(r.user.name)}</b><br><small>${r.finds} found · ${r.hides} hidden · ${r.escapes} escaped</small></span><span class="pts">${r.points}</span></div>`).join('')
-    : '<div class="empty">No players yet</div>';
+function renderSendSummary() {
+  const names = [...($('#send-story').checked ? ['My Story'] : []), ...[...SEL.groups].map(id => S.groups.find(g => g.id === id)?.name), ...[...SEL.to].map(id => S.friends.friends.find(f => f.user.id === id)?.user.name)];
+  $('#send-summary').textContent = names.length ? names.join(', ') : 'Pick friends, groups or My Story';
+  $('#send-go').disabled = !names.length;
 }
+$('#send-story').onchange = renderSendSummary;
+$('#send-go').onclick = async () => {
+  const fd = new FormData(); fd.append('photo', ED.composed, 'snap.jpg'); fd.append('timer', ED.timer);
+  fd.append('to', JSON.stringify([...SEL.to])); fd.append('groups', JSON.stringify([...SEL.groups])); if ($('#send-story').checked) fd.append('story', '1');
+  $('#send-go').disabled = true;
+  try { await api('/api/snaps', { body: fd }); closeSheets(); closeEditor(); toast('Sent! ➤', 'y'); sonar('pop'); refreshChats(); refreshStories(); }
+  catch (e) { toast(e.message); $('#send-go').disabled = false; }
+};
 
-// ---------- chat ----------
-function renderChat() {
-  $('#chat-title').textContent = S.group ? `${S.group.emoji} ${S.group.name}` : 'No group';
-  $('#chat-sub').textContent = S.group ? `${S.group.members.length} players · code ${S.group.code}` : '';
-  const f = $('#chat-feed');
-  if (!S.group) { f.innerHTML = '<div class="empty">Create or join a group to start playing.</div>'; return; }
-  f.innerHTML = S.messages.map(m => {
-    if (m.type === 'system') return `<div class="sys">${esc(m.text)}</div>`;
-    if (m.type === 'hide' || m.type === 'ping' || m.type === 'found' || m.type === 'move') {
-      const h = S.hides.find(x => x.id === m.hideId);
-      const img = m.photo || h?.photo;
-      const sub = m.type === 'hide' && m.firstPingAt ? `First ping at ${fmtTime(m.firstPingAt)} · tap to view` : fmtTime(m.createdAt);
-      return `<button class="card ${m.type}" data-hide="${m.hideId}">${img ? `<img src="${img}" alt="">` : ''}<div class="grow" style="text-align:left"><div class="t">${esc(m.text)}</div><div class="s">${sub}</div></div></button>`;
+// ---------- snap viewer ----------
+let snapTimer = null;
+async function openSnap(id, replay = false) {
+  try {
+    const r = await api(`/api/snaps/${id}/${replay ? 'replay' : 'open'}`, { body: {} });
+    $('#sv-snap-img').src = r.image; $('#snap-from').innerHTML = `${avatarHtml(r.from)} <b>${esc(r.from.name)}</b>${replay ? ' <small>replay</small>' : ''}`;
+    stopCamera(); $('#snap-viewer').classList.remove('hidden');
+    clearInterval(snapTimer);
+    const ring = $('#snap-ring'); ring.classList.toggle('hidden', !r.timer);
+    if (r.timer) {
+      const end = Date.now() + r.timer * 1000; ring.style.setProperty('--dur', r.timer + 's'); ring.classList.remove('run'); void ring.offsetWidth; ring.classList.add('run');
+      const tickFn = () => { const left = end - Date.now(); $('#snap-secs').textContent = Math.max(0, Math.ceil(left / 1000)); if (left <= 0) closeSnap(); };
+      tickFn(); snapTimer = setInterval(tickFn, 200);
     }
-    const me = m.userId === S.user.id;
-    return `<div class="msg ${me ? 'me' : ''}" style="color:${me ? 'var(--accent)' : m.user?.color || '#4FB7FF'}"><div class="who">${me ? 'Me' : esc(m.user?.name)}</div>
-      <div class="bubble">${esc(m.text)}${m.photo ? `<img class="chat-photo" src="${m.photo}" alt="">` : ''}</div></div>`;
-  }).join('') || '<div class="empty">Say hi 👋</div>';
-  $$('#chat-feed [data-hide]').forEach(b => b.onclick = () => openStory(b.dataset.hide));
-  scrollChat();
+    $('#snap-hint').textContent = r.canReplay ? 'Tap to close · you can replay once' : 'Tap to close';
+    S.inbox = S.inbox.filter(s => s.id !== id); renderInboxCount();
+  } catch (e) {
+    if (e.data?.canReplay) return openSnap(id, true);
+    toast(e.message); refreshInbox();
+  }
 }
-const scrollChat = () => { const f = $('#chat-feed'); f.scrollTop = f.scrollHeight; };
-$('#chat-form').onsubmit = async e => {
-  e.preventDefault(); const t = $('#chat-input').value.trim(); if (!t || !S.groupId) return;
-  $('#chat-input').value = '';
-  const fd = new FormData(); fd.append('text', t);
-  try { await api(`/api/groups/${S.groupId}/messages`, { body: fd }); } catch (err) { toast(err.message); }
-};
-$('#chat-cam').onclick = () => $('#chat-file').click();
-$('#chat-file').onchange = async e => {
-  const f = e.target.files[0]; e.target.value = ''; if (!f || !S.groupId) return;
-  const fd = new FormData(); fd.append('photo', await shrink(f), 'snap.jpg'); fd.append('text', $('#chat-input').value.trim()); $('#chat-input').value = '';
-  try { await api(`/api/groups/${S.groupId}/messages`, { body: fd }); } catch (err) { toast(err.message); }
-};
-$('#share-code').onclick = async () => {
-  if (!S.group) return;
-  const url = `${location.origin}/?join=${S.group.code}`;
-  const text = `Join my PeekaSnap group "${S.group.name}"! Code: ${S.group.code}`;
-  if (navigator.share) { try { await navigator.share({ title: 'PeekaSnap', text, url }); return; } catch (_) {} }
-  try { await navigator.clipboard.writeText(`${text} ${url}`); toast('Invite link copied 📋', 'y'); } catch (_) { prompt('Share this invite:', `${text} ${url}`); }
+function closeSnap() {
+  clearInterval(snapTimer); $('#snap-viewer').classList.add('hidden'); $('#sv-snap-img').src = '';
+  debounceChats(); if (S.thread) openThread(S.thread.chatId, true);
+  if (S.view === 'camera' && !anyOverlayOpen()) startCamera();
+}
+$('#snap-viewer').onclick = closeSnap;
+async function refreshInbox() { if (!S.token) return; try { S.inbox = (await api('/api/snaps/inbox')).snaps; } catch (_) {} renderInboxCount(); }
+function renderInboxCount() { const c = $('#inbox-count'); c.textContent = S.inbox.length; c.classList.toggle('hidden', !S.inbox.length); }
+
+// ---------- chat list ----------
+async function refreshChats() { if (!S.token) return; try { S.chats = (await api('/api/chats')).chats; } catch (_) {} renderChatList(); }
+function statusLine(c) {
+  const newSnaps = S.inbox.filter(s => (s.via ? s.via === c.chatId : c.user && s.from.id === c.user.id));
+  if (newSnaps.length) return `<span class="st snap-new">■</span> <b class="red">New Snap${newSnaps.length > 1 ? 's' : ''}</b>`;
+  const m = c.last; if (!m) return '<span class="muted">Tap to chat</span>';
+  const mine = m.userId === S.user.id, t = ` · ${ago(m.createdAt)}`;
+  if (m.type === 'snap') {
+    if (mine) return `<span class="st snap-sent">➤</span> ${m.snap?.state === 'opened' ? 'Opened' : 'Delivered'}${t}`;
+    return `<span class="st snap-open">□</span> Received${t}`;
+  }
+  if (!m.userId) return `<span class="muted">${esc(m.text).slice(0, 48)}</span>${t}`;
+  if (c.unread) return `<span class="st chat-new">■</span> <b class="blue">New Chat</b>${t}`;
+  if (mine) return `<span class="st chat-sent">➤</span> ${c.type === 'dm' && c.theirRead >= m.createdAt ? 'Opened' : 'Delivered'}${t}`;
+  return `<span class="st chat-open">□</span> ${esc((m.text || '📷 Photo').slice(0, 40))}${t}`;
+}
+function renderChatList() {
+  const el = $('#chat-list');
+  if (!S.chats.length) { el.innerHTML = '<div class="empty">No chats yet. <button class="link-btn" id="cl-add">Add friends</button> or create a group.</div>'; $('#cl-add').onclick = openFriends; return; }
+  el.innerHTML = S.chats.map(c => `<div class="chat-row" data-chat="${c.chatId}">
+    ${c.type === 'dm' ? avatarHtml(c.user) : `<span class="avatar ge">${esc(c.group.emoji)}</span>`}
+    <div class="grow"><b>${esc(c.title)}</b><div class="cl-status">${statusLine(c)}</div></div>
+    ${c.streak ? `<span class="streak">🔥${c.streak}</span>` : ''}
+    <button class="cl-cam" data-snapto="${c.chatId}" title="Snap back">📷</button></div>`).join('');
+  $$('.chat-row').forEach(r => {
+    const c = S.chats.find(x => x.chatId === r.dataset.chat);
+    onLongPress(r, () => deleteChatFlow(c));
+    onSwipeLeft(r, () => deleteChatFlow(c));
+  });
+  $$('.chat-row').forEach(r => r.onclick = e => {
+    if (r.dataset.lp) { delete r.dataset.lp; return; }
+    if (e.target.closest('.cl-cam')) { setView('camera'); return; }
+    const c = S.chats.find(x => x.chatId === r.dataset.chat);
+    const snap = S.inbox.find(s => (s.via ? s.via === c.chatId : c.user && s.from.id === c.user.id));
+    if (snap) openSnap(snap.id); else openThread(c.chatId);
+  });
+}
+$('#new-group-btn').onclick = () => openSheet('groups');
+
+// ---------- chat thread ----------
+async function openThread(chatId, silent) {
+  try {
+    const r = await api('/api/chats/' + encodeURIComponent(chatId));
+    S.thread = r.chat; S.threadMsgs = r.messages; S.threadReads = r.reads;
+    if (!silent || $('#thread').classList.contains('hidden')) { stopCamera(); $('#thread').classList.remove('hidden'); }
+    const c = r.chat;
+    const t = $('#thread-av');
+    if (c.type === 'dm') { t.textContent = c.other.name[0].toUpperCase(); t.style.background = c.other.color; $('#thread-title').textContent = c.other.name; $('#thread-sub').textContent = `@${c.other.username}${c.streak ? ` · 🔥${c.streak}` : ''}`; }
+    else { const g = S.groups.find(x => x.id === c.groupId) || {}; t.textContent = g.emoji || '👥'; t.style.background = '#2a2a2e'; $('#thread-title').textContent = g.name || 'Group'; $('#thread-sub').textContent = `${c.members.length} members${g.code ? ' · code ' + g.code : ''}`; }
+    $('#thread-form').classList.toggle('hidden', c.canSend === false);
+    renderThread(); markThreadRead();
+  } catch (e) { toast(e.message); }
+}
+function markThreadRead() { if (S.thread) api(`/api/chats/${encodeURIComponent(S.thread.chatId)}/read`, { body: {} }).then(debounceChats).catch(() => {}); }
+function closeThread() { S.thread = null; $('#thread').classList.add('hidden'); refreshChats(); if (S.view === 'camera') startCamera(); }
+$('#thread-back').onclick = closeThread;
+$('#thread-info').onclick = () => {
+  const c = S.thread; if (!c) return;
+  const g = S.groups.find(x => x.id === c.groupId);
+  const acts = [{ label: '🗑 Delete conversation', danger: true, fn: () => deleteChatFlow({ chatId: c.chatId, type: c.type, title: c.type === 'dm' ? c.other.name : g?.name, group: g }) }];
+  if (c.type === 'dm') acts.push({ label: `Remove ${c.other.name} as a friend`, fn: async () => { if (await askConfirm(`Remove ${c.other.name}?`, 'You can add them back later.', 'Remove')) { await api('/api/friends/remove', { body: { userId: c.other.id } }); closeThread(); refreshFriends(); } } });
+  if (g) { acts.unshift({ label: '🔗 Share invite', fn: () => shareGroup(g) }); acts.push({ label: '🚪 Leave group', danger: true, fn: () => leaveGroupFlow(g) }); }
+  askAction(c.type === 'dm' ? c.other.name : (g?.name || 'Chat'), '', acts);
 };
 
-// ---------- main map ----------
-let map, meMarker, hideLayer;
-// OpenStreetMap tiles, darkened with a CSS filter (.leaflet-tile-pane) to match the black theme
+// ---------- deleting chats & messages ----------
+function onLongPress(el, cb, ms = 550) {
+  let t = null, x0, y0;
+  const cancel = () => { clearTimeout(t); t = null; };
+  el.addEventListener('pointerdown', e => { if (e.button > 0) return; x0 = e.clientX; y0 = e.clientY; cancel(); t = setTimeout(() => { t = null; el.dataset.lp = '1'; navigator.vibrate?.(30); cb(); setTimeout(() => delete el.dataset.lp, 800); }, ms); });
+  el.addEventListener('pointermove', e => { if (t && Math.hypot(e.clientX - x0, e.clientY - y0) > 10) cancel(); });
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach(ev => el.addEventListener(ev, cancel));
+  el.addEventListener('contextmenu', e => { e.preventDefault(); cancel(); el.dataset.lp = '1'; cb(); setTimeout(() => delete el.dataset.lp, 800); }); // right-click on desktop
+}
+function onSwipeLeft(el, cb) {
+  let x0 = null, y0, dx = 0;
+  el.addEventListener('pointerdown', e => { x0 = e.clientX; y0 = e.clientY; dx = 0; el.style.transition = 'none'; });
+  el.addEventListener('pointermove', e => {
+    if (x0 == null) return; dx = Math.min(0, e.clientX - x0);
+    if (Math.abs(e.clientY - y0) > 30 && dx > -20) { x0 = null; el.style.transform = ''; return; }
+    el.style.transform = `translateX(${Math.max(dx, -110)}px)`; el.classList.toggle('swiping', dx < -20);
+  });
+  const end = () => { if (x0 == null) return; x0 = null; el.style.transition = ''; el.style.transform = ''; el.classList.remove('swiping'); if (dx < -70) { el.dataset.lp = '1'; cb(); setTimeout(() => delete el.dataset.lp, 800); } };
+  el.addEventListener('pointerup', end); el.addEventListener('pointercancel', end);
+}
+function askAction(title, body, actions) {
+  $('#ask-title').textContent = title; $('#ask-body').textContent = body || ''; $('#ask-body').classList.toggle('hidden', !body);
+  $('#ask-actions').innerHTML = actions.map((a, i) => `<button class="${a.danger ? 'btn-red' : 'btn-glass dark'} wide" data-act="${i}">${esc(a.label)}</button>`).join('');
+  return new Promise(res => {
+    const done = v => { $('#ask-sheet').classList.add('hidden'); res(v); };
+    $$('#ask-actions [data-act]').forEach(b => b.onclick = () => { done(true); actions[+b.dataset.act].fn?.(); });
+    $('#ask-cancel').onclick = () => done(false);
+    $('#ask-sheet').onclick = e => { if (e.target.id === 'ask-sheet') done(false); };
+    $('#ask-sheet').classList.remove('hidden');
+  });
+}
+function askConfirm(title, body, okLabel = 'Delete') {
+  return new Promise(res => {
+    askAction(title, body, [{ label: okLabel, danger: true, fn: () => res(true) }]).then(v => { if (!v) res(false); });
+  });
+}
+async function deleteChatFlow(c) {
+  if (!c) return;
+  const name = c.title || 'this chat';
+  const ok = await askConfirm(`Delete conversation with ${name}?`, c.type === 'dm'
+    ? `This clears the chat for you only. ${name} still keeps their copy. Unopened Snaps stay in your inbox.`
+    : 'This clears the group chat for you only. It comes back to your list when someone sends something new. Leave the group to stop getting messages.', 'Delete conversation');
+  if (!ok) return;
+  try {
+    await api('/api/chats/' + encodeURIComponent(c.chatId), { method: 'DELETE' });
+    toast('Conversation deleted 🗑', 'y');
+    if (S.thread?.chatId === c.chatId) closeThread(); else refreshChats();
+  } catch (e) { toast(e.message); }
+}
+async function leaveGroupFlow(g) {
+  if (!await askConfirm(`Leave ${g.name}?`, 'The group chat disappears from your list and you stop getting its messages and games.', 'Leave group')) return;
+  try { await api(`/api/groups/${g.id}/leave`, { body: {} }); toast(`Left ${g.name}`, 'y'); closeThread(); await refreshMe(); if (S.groupId === g.id) { S.groupId = S.groups[0]?.id || null; localStorage.setItem('ps_group', S.groupId || ''); loadGroup(); } refreshChats(); }
+  catch (e) { toast(e.message); }
+}
+async function deleteMsgFlow(m) {
+  if (!m || !S.thread) return;
+  const mine = m.userId === S.user.id && ['chat', 'snap'].includes(m.type || 'chat');
+  const ok = await askConfirm(mine ? 'Unsend this message?' : 'Delete this message?', mine ? 'It will be deleted for everyone in this chat.' : 'It will be deleted for you only. Others still see it.', mine ? 'Delete for everyone' : 'Delete for me');
+  if (!ok) return;
+  try {
+    await api(`/api/chats/${encodeURIComponent(S.thread.chatId)}/messages/${m.id}`, { method: 'DELETE' });
+    S.threadMsgs = S.threadMsgs.filter(x => x.id !== m.id); renderThread(); debounceChats();
+  } catch (e) { toast(e.message); }
+}
+function msgHtml(m) {
+  if (m.type === 'system') return `<div class="sys">${esc(m.text)}</div>`;
+  if (['hide', 'ping', 'found', 'move'].includes(m.type)) {
+    const h = S.hides.find(x => x.id === m.hideId);
+    const img = m.photo || h?.photo;
+    const sub = m.type === 'hide' && m.firstPingAt ? `First ping at ${fmtTime(m.firstPingAt)} · tap to view` : fmtTime(m.createdAt);
+    return `<button class="card ${m.type}" data-hide="${m.hideId}">${img ? `<img src="${img}" alt="">` : ''}<div class="grow" style="text-align:left"><div class="t">${esc(m.text)}</div><div class="s">${sub}</div></div></button>`;
+  }
+  if (m.type === 'hunt') return `<div class="card hunt-card"><div class="grow"><div class="t">${esc(m.text)}</div><div class="s">${fmtTime(m.createdAt)}</div></div></div>`;
+  const me = m.userId === S.user.id, color = me ? 'var(--accent)' : m.user?.color || '#4FB7FF';
+  let inner;
+  if (m.type === 'snap') {
+    const st = m.snap?.state || 'delivered';
+    const label = me ? (st === 'opened' ? '➤ Opened' : st === 'some-opened' ? '➤ Opened by some' : '➤ Delivered') + (m.snap?.replays ? ` · replayed` : '')
+      : st === 'new' ? '■ Tap to view Snap' : st === 'replayable' ? '↻ Tap to replay' : st === 'expired' ? '□ Expired' : '□ Opened';
+    inner = `<button class="snap-bubble ${st} ${me ? 'mine' : ''}" data-snap="${m.snapId}" data-st="${st}" ${me ? 'disabled' : ''}>${label}</button>`;
+  } else inner = `<div class="bubble">${esc(m.text)}${m.photo ? `<img class="chat-photo" src="${m.photo}" alt="">` : ''}</div>`;
+  return `<div class="msg ${me ? 'me' : ''}" style="color:${color}"><div class="who">${me ? 'Me' : esc(m.user?.name)}</div>${inner}</div>`;
+}
+function renderThread() {
+  const f = $('#thread-feed'), c = S.thread; if (!c) return;
+  let html = S.threadMsgs.map(m => `<div class="mrow" data-mid="${m.id}">${msgHtml(m)}</div>`).join('') || '<div class="empty">Say hi 👋</div>';
+  const lastMine = [...S.threadMsgs].reverse().find(m => m.userId === S.user.id && m.type === 'chat');
+  if (lastMine && c.type === 'dm') html += `<div class="receipt">${(S.threadReads[c.other.id] || 0) >= lastMine.createdAt ? 'Opened ' + ago(S.threadReads[c.other.id]) : 'Delivered'}</div>`;
+  f.innerHTML = html;
+  $$('#thread-feed .mrow').forEach(r => onLongPress(r, () => deleteMsgFlow(S.threadMsgs.find(m => m.id === r.dataset.mid))));
+  $$('#thread-feed [data-snap]').forEach(b => b.onclick = () => { if (b.closest('.mrow').dataset.lp) return; const st = b.dataset.st; if (st === 'new') openSnap(b.dataset.snap); else if (st === 'replayable') openSnap(b.dataset.snap, true); });
+  $$('#thread-feed [data-hide]').forEach(b => b.onclick = () => { if (!b.closest('.mrow').dataset.lp) openStory(b.dataset.hide); });
+  f.scrollTop = f.scrollHeight;
+}
+let typingT, lastTypingSent = 0;
+function showTyping(u) { $('#typing-who').textContent = `${u.name} is typing…`; $('#typing').classList.remove('hidden'); clearTimeout(typingT); typingT = setTimeout(() => $('#typing').classList.add('hidden'), 3000); }
+$('#thread-input').oninput = () => { if (S.thread && Date.now() - lastTypingSent > 1500) { lastTypingSent = Date.now(); S.socket?.emit('typing', { chatId: S.thread.chatId }); } };
+$('#thread-form').onsubmit = async e => {
+  e.preventDefault(); const t = $('#thread-input').value.trim(); if (!t || !S.thread) return;
+  $('#thread-input').value = '';
+  const fd = new FormData(); fd.append('text', t);
+  try { await api(`/api/chats/${encodeURIComponent(S.thread.chatId)}/messages`, { body: fd }); } catch (err) { toast(err.message); }
+};
+$('#thread-cam').onclick = () => $('#thread-file').click();
+$('#thread-file').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f || !S.thread) return;
+  const fd = new FormData(); fd.append('photo', await shrink(f), 'photo.jpg'); fd.append('text', $('#thread-input').value.trim()); $('#thread-input').value = '';
+  try { await api(`/api/chats/${encodeURIComponent(S.thread.chatId)}/messages`, { body: fd }); } catch (err) { toast(err.message); }
+};
+
+// ---------- friends ----------
+async function refreshFriends() {
+  if (!S.token) return;
+  try { S.friends = await api('/api/friends'); } catch (_) {}
+  $('#req-dot').classList.toggle('hidden', !S.friends.incoming.length);
+  if (!$('#friends-sheet').classList.contains('hidden')) renderFriends();
+}
+function openFriends() { renderFriends(); $('#friends-sheet').classList.remove('hidden'); setTimeout(() => $('#friend-search').focus(), 200); }
+$('#add-friend-btn').onclick = openFriends;
+function renderFriends() {
+  const F = S.friends;
+  $('#friend-requests').innerHTML = (F.incoming.length ? `<div class="section-title dark">Added Me</div>` + F.incoming.map(u => `<div class="send-row">${avatarHtml(u)}<span class="grow"><b>${esc(u.name)}</b><br><small>@${esc(u.username)}</small></span><button class="chip red" data-accept="${u.id}">Accept</button><button class="chip" data-remove="${u.id}">✕</button></div>`).join('') : '')
+    + (F.outgoing.length ? `<div class="section-title dark">Pending</div>` + F.outgoing.map(u => `<div class="send-row">${avatarHtml(u)}<span class="grow"><b>${esc(u.name)}</b><br><small>@${esc(u.username)} · requested</small></span><button class="chip" data-remove="${u.id}">Cancel</button></div>`).join('') : '');
+  $('#friend-list').innerHTML = F.friends.length ? F.friends.map(f => `<div class="send-row">${avatarHtml(f.user)}<span class="grow"><b>${esc(f.user.name)}</b> ${f.streak ? `<span class="streak">🔥${f.streak}</span>` : ''}<br><small>@${esc(f.user.username)}</small></span><button class="chip" data-dm="${f.user.id}">💬</button></div>`).join('')
+    : '<div class="empty dark">No friends yet. Search a username above, or share yours from your Profile.</div>';
+  bindFriendButtons('#friends-sheet');
+}
+function bindFriendButtons(scope) {
+  $$(scope + ' [data-accept]').forEach(b => b.onclick = async () => { await api('/api/friends/accept', { body: { userId: b.dataset.accept } }).catch(e => toast(e.message)); refreshFriends(); refreshChats(); });
+  $$(scope + ' [data-remove]').forEach(b => b.onclick = async () => { await api('/api/friends/remove', { body: { userId: b.dataset.remove } }); refreshFriends(); });
+  $$(scope + ' [data-add]').forEach(b => b.onclick = async () => { try { const r = await api('/api/friends/request', { body: { userId: b.dataset.add } }); toast(r.status === 'friends' ? 'You are now friends 🤝' : 'Request sent 👋', 'y'); b.textContent = r.status === 'friends' ? 'Friends' : 'Added'; b.disabled = true; refreshFriends(); } catch (e) { toast(e.message); } });
+  $$(scope + ' [data-dm]').forEach(b => b.onclick = () => { closeSheets(); openThread('dm_' + [S.user.id, b.dataset.dm].sort().join('_')); });
+}
+let searchT;
+$('#friend-search').oninput = e => {
+  clearTimeout(searchT); const q = e.target.value.trim();
+  searchT = setTimeout(async () => {
+    if (q.length < 2) { $('#friend-results').innerHTML = ''; return; }
+    const r = await api('/api/users/search?q=' + encodeURIComponent(q)).catch(() => ({ users: [] }));
+    const btn = u => u.relation === 'friends' ? '<button class="chip" disabled>Friends</button>' : u.relation === 'outgoing' ? '<button class="chip" disabled>Added</button>' : u.relation === 'incoming' ? `<button class="chip red" data-accept="${u.id}">Accept</button>` : `<button class="chip red" data-add="${u.id}">＋ Add</button>`;
+    $('#friend-results').innerHTML = r.users.length ? r.users.map(u => `<div class="send-row">${avatarHtml(u)}<span class="grow"><b>${esc(u.name)}</b><br><small>@${esc(u.username)}</small></span>${btn(u)}</div>`).join('') : '<div class="empty dark">No one found</div>';
+    bindFriendButtons('#friend-results');
+  }, 250);
+};
+
+// ---------- profile ----------
+$('#me-btn').onclick = () => { renderProfile(); $('#profile-sheet').classList.remove('hidden'); };
+function renderProfile() {
+  const a = $('#profile-av'); a.textContent = S.user.name[0].toUpperCase(); a.style.background = S.user.color;
+  $('#profile-name').textContent = S.user.name; $('#profile-user').textContent = '@' + S.user.username;
+  $('#ghost-switch').checked = !S.user.shareLocation;
+  renderInstallBtn();
+  const nb = $('#notif-btn');
+  if (!('Notification' in window)) nb.textContent = isIOS && !isStandalone() ? '🔔 Alerts: add to Home Screen first' : '🔔 Alerts: in-app only on this browser';
+  else nb.textContent = Notification.permission === 'granted' ? '🔔 Alerts are on' : '🔔 Turn on alerts';
+}
+$('#notif-btn').onclick = enableAlerts;
+$('#groups-btn').onclick = () => { closeSheets(); openSheet('groups'); };
+$('#signout-btn').onclick = () => { if (confirm(`Sign out @${S.user.username} on this device?`)) { localStorage.clear(); location.reload(); } };
+$('#share-username').onclick = async () => {
+  const url = `${location.origin}/?add=${S.user.username}`, text = `Add me on PeekaSnap: @${S.user.username}`;
+  if (navigator.share) { try { await navigator.share({ title: 'PeekaSnap', text, url }); return; } catch (_) {} }
+  try { await navigator.clipboard.writeText(`${text} ${url}`); toast('Link copied 📋', 'y'); } catch (_) { prompt('Share this:', `${text} ${url}`); }
+};
+$('#ghost-switch').onchange = e => setGhost(e.target.checked);
+async function setGhost(ghost) {
+  try {
+    const r = await api('/api/me', { method: 'PATCH', body: { shareLocation: !ghost } }); S.user = { ...S.user, ...r.user };
+    if (!ghost) { lastShare = 0; getLoc().then(l => setMyLoc({ coords: { latitude: l.lat, longitude: l.lng, accuracy: l.acc } })).catch(e => toast(e.message)); }
+    toast(ghost ? '👻 Ghost Mode on: friends can\'t see you' : '📍 Friends can now see you on the Map', 'y'); renderGhost(); renderProfile();
+  } catch (e) { toast(e.message); }
+}
+
+// ---------- stories ----------
+async function refreshStories() { if (!S.token) return; try { S.stories = await api('/api/stories'); } catch (_) {} renderStoriesTab(); }
+function renderStoriesTab() {
+  const F = S.stories.friends;
+  $('#story-bar').innerHTML = F.length ? F.map((f, i) => `<button class="story-card" data-fs="${i}"><div class="story-ring ${f.allSeen ? 'done' : ''}"><img src="${f.stories[f.stories.length - 1].photo}" alt=""></div><div class="lbl">${esc(f.user.name)}</div><div class="cd">${ago(f.latest)}</div></button>`).join('')
+    : '<div class="empty small">No stories from friends yet</div>';
+  const M = S.stories.mine;
+  $('#my-story').innerHTML = `<button class="my-story-card" id="my-story-open">${M.length ? `<img src="${M[M.length - 1].photo}" alt="">` : '<span class="story-new">＋</span>'}<div class="grow"><b>My Story</b><div class="muted">${M.length ? `${M.length} snap${M.length > 1 ? 's' : ''} · 👁 ${new Set(M.flatMap(s => s.views.map(v => v.user.id))).size} viewers` : 'Tap to add a snap · lasts 24h'}</div></div></button>`;
+  $$('[data-fs]').forEach(b => b.onclick = () => openStoryViewer(S.stories.friends[+b.dataset.fs]));
+  $('#my-story-open').onclick = () => M.length ? openStoryViewer({ user: S.user, stories: M }, true) : setView('camera');
+}
+let SV = null, svTimer = null;
+function openStoryViewer(entry, mine) { SV = { entry, i: Math.max(0, mine ? 0 : entry.stories.findIndex(s => !s.seen)), mine }; stopCamera(); $('#sv').classList.remove('hidden'); showStory(); }
+function showStory() {
+  clearTimeout(svTimer);
+  const { entry, i, mine } = SV, s = entry.stories[i]; if (!s) return closeStoryViewer();
+  $('#sv-img').src = s.photo;
+  $('#sv-bars').innerHTML = entry.stories.map((_, k) => `<i class="${k < i ? 'on' : ''}">${k === i ? `<b style="animation-duration:${s.timer}s"></b>` : ''}</i>`).join('');
+  const a = $('#sv-av'); a.textContent = entry.user.name[0].toUpperCase(); a.style.background = entry.user.color;
+  $('#sv-name').textContent = mine ? 'My Story' : entry.user.name; $('#sv-time').textContent = ago(s.createdAt) + ' ago';
+  $('#sv-views').classList.toggle('hidden', !mine);
+  if (mine) $('#sv-views').innerHTML = `👁 ${s.views.length}${s.views.length ? ' · ' + s.views.map(v => esc(v.user.name)).join(', ') : ''} <button class="chip" id="sv-del">🗑</button>`;
+  $('#sv-del')?.addEventListener('click', async e => { e.stopPropagation(); await api('/api/stories/' + s.id, { method: 'DELETE' }); toast('Deleted'); closeStoryViewer(); refreshStories(); });
+  if (!mine && !s.seen) api(`/api/stories/${s.id}/view`, { body: {} }).catch(() => {});
+  s.seen = true;
+  svTimer = setTimeout(nextStory, s.timer * 1000);
+}
+function nextStory() { SV.i++; if (SV.i >= SV.entry.stories.length) return closeStoryViewer(); showStory(); }
+function closeStoryViewer() { clearTimeout(svTimer); SV = null; $('#sv').classList.add('hidden'); refreshStories(); if (S.view === 'camera') startCamera(); }
+$('#sv-next').onclick = nextStory;
+$('#sv-prev').onclick = () => { SV.i = Math.max(0, SV.i - 1); showStory(); };
+$('#sv-close').onclick = closeStoryViewer;
+
+// ---------- Snap Map ----------
+let map, meMarker; const friendMarkers = {};
 const tiles = () => L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' });
-const AREA_STYLE = { color: '#FF2D46', weight: 2, dashArray: '6 8', fillColor: '#FF2D46', fillOpacity: 0.08 };
 const emojiIcon = (e, size = 30) => L.divIcon({ className: '', html: `<div class="emoji-marker">${e}</div>`, iconSize: [size, size], iconAnchor: [size / 2, size / 2] });
-function initMap() {
-  if (map) return;
-  map = L.map('map', { zoomControl: false }).setView([37.7749, -122.4194], 13);
-  tiles().addTo(map);
-  hideLayer = L.layerGroup().addTo(map);
-  renderMapHides(); updateMeMarker();
+const AREA_STYLE = { color: '#FF2D46', weight: 2, dashArray: '6 8', fillColor: '#FF2D46', fillOpacity: 0.08 };
+const personIcon = (u, cls = '') => L.divIcon({ className: '', html: `<div class="person-marker ${cls}"><span style="background:${u.color}">${esc(u.name[0].toUpperCase())}</span><em>${esc(u.name)}</em></div>`, iconSize: [44, 60], iconAnchor: [22, 22] });
+async function initMap() {
+  if (!map) {
+    map = L.map('map', { zoomControl: false }).setView([37.7749, -122.4194], 13);
+    tiles().addTo(map); updateMeMarker();
+    getLoc().then(l => map.setView([l.lat, l.lng], 15)).catch(() => {});
+  }
+  setTimeout(() => map.invalidateSize(), 50);
+  renderGhost();
+  try {
+    const r = await api('/api/map');
+    Object.keys(friendMarkers).forEach(k => { if (!r.friends.some(f => f.user.id === k)) { friendMarkers[k].remove(); delete friendMarkers[k]; } });
+    r.friends.forEach(f => updateFriendMarker({ userId: f.user.id, user: f.user, lat: f.lat, lng: f.lng, t: f.t }));
+  } catch (_) {}
+}
+function updateFriendMarker(d) {
+  if (!map) return;
+  if (d.gone) { friendMarkers[d.userId]?.remove(); delete friendMarkers[d.userId]; return; }
+  const u = d.user || S.friends.friends.find(f => f.user.id === d.userId)?.user; if (!u) return;
+  if (friendMarkers[d.userId]) friendMarkers[d.userId].setLatLng([d.lat, d.lng]);
+  else friendMarkers[d.userId] = L.marker([d.lat, d.lng], { icon: personIcon(u) }).addTo(map).on('click', () => openThread('dm_' + [S.user.id, d.userId].sort().join('_')));
 }
 function updateMeMarker() {
   if (!map || !S.myLoc) return;
@@ -433,186 +766,47 @@ function updateMeMarker() {
   if (!meMarker) meMarker = L.marker(ll, { icon: L.divIcon({ className: '', html: '<div class="me-dot"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }), zIndexOffset: 1000 }).addTo(map);
   else meMarker.setLatLng(ll);
 }
-function renderMapHides() {
-  if (!map) return;
-  hideLayer.clearLayers();
-  for (const h of S.hides) {
-    const active = h.status === 'active';
-    if (!active && Date.now() - h.createdAt > 864e5) continue;
-    L.circle([h.center.lat, h.center.lng], { ...AREA_STYLE, radius: h.radius, color: active ? '#FF2D46' : '#666', fillOpacity: active ? 0.08 : 0.03 }).addTo(hideLayer);
-    const last = h.pings[h.pings.length - 1];
-    if (last && active && h.hintOutdated) L.circle([last.center.lat, last.center.lng], { radius: last.radius, color: '#888', weight: 2, dashArray: '3 6', fill: false }).addTo(hideLayer)
-      .bindTooltip('Old hint - the object was moved!', { permanent: false });
-    else if (last && active) L.circle([last.center.lat, last.center.lng], { radius: last.radius, color: '#FFFFFF', weight: 4, fillColor: '#FF1A3C', fillOpacity: 0.38, className: 'hint-pulse' }).addTo(hideLayer)
-      .bindTooltip(`Ping ${last.n}: it's in here!`, { permanent: false });
-    const m = L.marker([h.center.lat, h.center.lng], { icon: L.divIcon({ className: '', html: `<div class="hide-marker"><img src="${h.photo}"></div>`, iconSize: [46, 46], iconAnchor: [23, 23] }) }).addTo(hideLayer);
-    m.on('click', () => openStory(h.id));
-    if (h.spot) L.marker([h.spot.lat, h.spot.lng], { icon: emojiIcon(h.status === 'found' ? '✅' : '🫣') }).addTo(hideLayer).bindTooltip(h.isHider && active ? 'Your hiding spot (only you see this)' : 'Hiding spot');
-  }
+function renderGhost() {
+  const ghost = !S.user?.shareLocation;
+  $('#ghost-status').innerHTML = ghost ? '👻 <b>Ghost Mode</b> · friends can\'t see you' : '📍 <b>Sharing</b> your location with friends';
+  $('#ghost-toggle').textContent = ghost ? '📍 Share my location' : '👻 Go ghost';
+  $('#ghost-toggle').classList.toggle('red', ghost);
 }
-function fitGroup() {
-  const act = activeHides();
-  if (act.length) {
-    const b = L.latLngBounds([]); act.forEach(h => b.extend(L.latLng(h.center.lat, h.center.lng).toBounds(h.radius * 2)));
-    map.fitBounds(b, { padding: [30, 30] });
-  } else if (S.myLoc) map.setView([S.myLoc.lat, S.myLoc.lng], 16);
-  else getLoc().then(l => map.setView([l.lat, l.lng], 16)).catch(() => {});
-}
-function focusHide(hid) {
-  const h = S.hides.find(x => x.id === hid); if (!h) return;
-  setView('map'); closeStory();
-  const last = h.pings[h.pings.length - 1];
-  const c = last || { center: h.center, radius: h.radius };
-  setTimeout(() => map.fitBounds(L.latLng(c.center.lat, c.center.lng).toBounds(c.radius * 2.4)), 80);
-}
-$('#locate-btn').onclick = () => getLoc().then(l => map.setView([l.lat, l.lng], 17)).catch(e => toast(e.message));
+$('#ghost-toggle').onclick = () => setGhost(!!S.user.shareLocation);
+$('#locate-btn').onclick = () => getLoc().then(l => map.setView([l.lat, l.lng], 16)).catch(e => toast(e.message));
 
-// ---------- create hide ----------
-let hmap, centerM, spotM, areaC;
-function openHideSheet() {
-  $('#hide-sheet').classList.remove('hidden'); $('#hide-err').textContent = '';
-  $('#hide-group-name').textContent = `${S.group.emoji} ${S.group.name}`;
-  const start = S.myLoc || { lat: 37.7749, lng: -122.4194 };
-  if (!hmap) {
-    hmap = L.map('hide-map', { zoomControl: false, attributionControl: false }).setView([start.lat, start.lng], 16);
-    tiles().addTo(hmap);
-    centerM = L.marker([start.lat, start.lng], { draggable: true, icon: emojiIcon('🎯') }).addTo(hmap);
-    spotM = L.marker([start.lat, start.lng], { draggable: true, icon: emojiIcon('🫣', 34), zIndexOffset: 500 }).addTo(hmap);
-    areaC = L.circle([start.lat, start.lng], { ...AREA_STYLE, radius: +$('#hide-radius').value, fillOpacity: 0.18 }).addTo(hmap);
-    centerM.on('drag', () => areaC.setLatLng(centerM.getLatLng()));
-    hmap.on('click', e => spotM.setLatLng(e.latlng));
-  } else {
-    centerM.setLatLng([start.lat, start.lng]); spotM.setLatLng([start.lat, start.lng]); areaC.setLatLng([start.lat, start.lng]);
-    hmap.setView([start.lat, start.lng], 16);
-  }
-  setTimeout(() => { hmap.invalidateSize(); fitArea(); }, 120);
-  if (!S.myLoc) getLoc().then(l => { centerM.setLatLng([l.lat, l.lng]); spotM.setLatLng([l.lat, l.lng]); areaC.setLatLng([l.lat, l.lng]); fitArea(); }).catch(e => $('#hide-err').textContent = e.message + ' - drag the markers to set the area.');
+// ---------- sheets & groups ----------
+function openSheet(name) { $('#' + name + '-sheet').classList.remove('hidden'); if (name === 'groups') renderGroups(); if (name === 'board') renderBoard(); }
+function closeSheets() { $$('.sheet-wrap').forEach(s => s.classList.add('hidden')); }
+document.addEventListener('click', e => { if (e.target.closest('[data-close]')) e.target.closest('.sheet-wrap').classList.add('hidden'); });
+$$('.sheet-wrap').forEach(w => w.addEventListener('click', e => { if (e.target === w) w.classList.add('hidden'); }));
+function renderGroups() {
+  $('#group-list').innerHTML = S.groups.length ? S.groups.map(g => `<div class="group-item ${g.id === S.groupId ? 'active' : ''}" data-g="${g.id}">
+    <span class="ge">${esc(g.emoji)}</span><span class="grow"><b>${esc(g.name)}</b><small>${g.memberCount} member${g.memberCount === 1 ? '' : 's'} · code ${g.code}</small></span>
+    <button class="chip" data-gchat="${g.id}">💬</button><button class="chip" data-gshare="${g.id}">Invite</button></div>`).join('')
+    : '<div class="empty dark">No groups yet. Create one, or join with a code from a friend.</div>';
+  $$('[data-g]').forEach(b => b.onclick = async e => {
+    if (e.target.closest('[data-gchat]')) { closeSheets(); return openThread(b.dataset.g); }
+    if (e.target.closest('[data-gshare]')) return shareGroup(S.groups.find(g => g.id === b.dataset.g));
+    S.groupId = b.dataset.g; closeSheets(); await loadGroup(); toast('Playing in ' + S.group.name);
+  });
 }
-const fitArea = () => hmap.fitBounds(areaC.getBounds(), { padding: [10, 10] });
-$('#hide-radius').oninput = e => { const r = +e.target.value; areaC.setRadius(r); $('#radius-val').textContent = r >= 1000 ? (r / 1000).toFixed(1) + ' km' : r + ' m'; };
-$('#hide-radius').onchange = fitArea;
-$('#hz-center-me').onclick = () => getLoc().then(l => { centerM.setLatLng([l.lat, l.lng]); areaC.setLatLng([l.lat, l.lng]); fitArea(); }).catch(e => toast(e.message));
-$('#hz-spot-me').onclick = () => getLoc().then(l => { spotM.setLatLng([l.lat, l.lng]); toast(`Spot saved (±${Math.round(l.acc)} m) 🫣`); }).catch(e => toast(e.message));
-$('#first-ping').onchange = e => $('#first-ping-at').classList.toggle('hidden', e.target.value !== 'custom');
-$('#hide-form').onsubmit = async e => {
-  e.preventDefault(); $('#hide-err').textContent = '';
-  const c = centerM.getLatLng(), s = spotM.getLatLng(), r = +$('#hide-radius').value;
-  if (c.distanceTo(s) > r) return $('#hide-err').textContent = 'The 🫣 hiding spot has to be inside the red play area.';
-  let first = $('#first-ping').value;
-  const minAt = Date.now() + S.minPingDelayMs;
-  const firstPingAt = first === 'custom' ? new Date($('#first-ping-at').value).getTime() : Date.now() + first * 60000;
-  if (!Number.isFinite(firstPingAt) || firstPingAt < minAt - 1000) return $('#hide-err').textContent = `The first ping has to be at least ${Math.round(S.minPingDelayMs / 60000)} min from now.`;
-  const fd = new FormData();
-  fd.append('photo', await shrink(S.snap), 'object.jpg');
-  Object.entries({ object: $('#hide-object').value, centerLat: c.lat, centerLng: c.lng, radius: r, spotLat: s.lat, spotLng: s.lng,
-    firstPingAt, intervalMin: $('#ping-interval').value, pingCount: $('#ping-count').value }).forEach(([k, v]) => fd.append(k, v));
-  const btn = $('#hide-submit'); btn.disabled = true; btn.textContent = 'Hiding…';
-  try {
-    const r2 = await api(`/api/groups/${S.groupId}/hides`, { body: fd });
-    closeSheets(); S.snap = null; $('#hide-object').value = '';
-    toast('Hidden! Your friends have been notified 🫣', 'y'); openStory(r2.hide.id);
-  } catch (err) { $('#hide-err').textContent = err.message; }
-  btn.disabled = false; btn.textContent = 'Hide it & start the hunt';
+async function shareGroup(g) {
+  const url = `${location.origin}/?join=${g.code}`, text = `Join my PeekaSnap group "${g.name}"! Code: ${g.code}`;
+  if (navigator.share) { try { await navigator.share({ title: 'PeekaSnap', text, url }); return; } catch (_) {} }
+  try { await navigator.clipboard.writeText(`${text} ${url}`); toast('Invite link copied 📋', 'y'); } catch (_) { prompt('Share this invite:', `${text} ${url}`); }
+}
+$('#join-form').onsubmit = async e => {
+  e.preventDefault(); $('#groups-err').textContent = '';
+  try { const r = await api('/api/groups/join', { body: { code: $('#join-code').value } }); S.groupId = r.group.id; $('#join-code').value = '';
+    await refreshMe(); await loadGroup(); closeSheets(); refreshChats(); toast('Joined ' + r.group.name + ' 🎉', 'y'); }
+  catch (err) { $('#groups-err').textContent = err.message; }
+};
+$('#create-form').onsubmit = async e => {
+  e.preventDefault(); $('#groups-err').textContent = '';
+  try { const r = await api('/api/groups', { body: { name: $('#create-name').value, emoji: $('#create-emoji').value } }); S.groupId = r.group.id; $('#create-name').value = '';
+    await refreshMe(); await loadGroup(); closeSheets(); refreshChats(); toast(`Group created! Invite code: ${r.group.code}`, 'y'); }
+  catch (err) { $('#groups-err').textContent = err.message; }
 };
 
-// ---------- move / rename (hider, once per ping) ----------
-let mmap, mSpot, mArea, mOrig, moveId = null, moveBlob = null;
-function openMoveSheet(hid) {
-  const h = S.hides.find(x => x.id === hid);
-  if (!h || !h.canMove) return toast('You can move it once after each ping');
-  moveId = hid; moveBlob = null; closeStory();
-  $('#move-sheet').classList.remove('hidden'); $('#move-err').textContent = '';
-  $('#move-ping-n').textContent = `${h.pings.length}/${h.pingCount}`;
-  $('#move-deadline').textContent = h.nextPingAt ? ` (${fmtTime(h.nextPingAt)})` : ' (the hunt ends at ' + fmtTime(h.endsAt) + ')';
-  $('#move-object').value = h.object; $('#move-thumb').src = h.photo;
-  mOrig = L.latLng(h.spot.lat, h.spot.lng);
-  if (!mmap) {
-    mmap = L.map('move-map', { zoomControl: false, attributionControl: false }).setView([h.center.lat, h.center.lng], 16);
-    tiles().addTo(mmap);
-    mArea = L.circle([h.center.lat, h.center.lng], { ...AREA_STYLE, radius: h.radius, fillOpacity: 0.15, interactive: false }).addTo(mmap);
-    mSpot = L.marker(mOrig, { draggable: true, icon: emojiIcon('🫣', 34), zIndexOffset: 500 }).addTo(mmap);
-    mmap.on('click', e => mSpot.setLatLng(e.latlng));
-  }
-  mArea.setLatLng([h.center.lat, h.center.lng]); mArea.setRadius(h.radius); mSpot.setLatLng(mOrig);
-  setTimeout(() => { mmap.invalidateSize(); mmap.fitBounds(mArea.getBounds(), { padding: [10, 10] }); }, 120);
-}
-$('#mv-reset').onclick = () => mSpot.setLatLng(mOrig);
-$('#mv-spot-me').onclick = () => getLoc().then(l => { mSpot.setLatLng([l.lat, l.lng]); toast(`New spot set (±${Math.round(l.acc)} m) 📍`); }).catch(e => toast(e.message));
-$('#move-photo-btn').onclick = () => $('#move-file').click();
-$('#move-file').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) { moveBlob = f; $('#move-thumb').src = URL.createObjectURL(f); } };
-$('#move-form').onsubmit = async e => {
-  e.preventDefault(); $('#move-err').textContent = '';
-  const s2 = mSpot.getLatLng(), c = mArea.getLatLng();
-  if (c.distanceTo(s2) > mArea.getRadius()) return $('#move-err').textContent = 'The new spot has to be inside the play area.';
-  const fd = new FormData();
-  if (s2.distanceTo(mOrig) > 1) { fd.append('spotLat', s2.lat); fd.append('spotLng', s2.lng); }
-  fd.append('object', $('#move-object').value);
-  if (moveBlob) fd.append('photo', await shrink(moveBlob), 'object.jpg');
-  const b = $('#move-submit'); b.disabled = true; b.textContent = 'Saving…';
-  try { const r = await api(`/api/hides/${moveId}/move`, { body: fd }); closeSheets(); toast('Updated! Seekers were told it changed 🔀', 'y'); openStory(r.hide.id); }
-  catch (err) { $('#move-err').textContent = err.message; }
-  b.disabled = false; b.textContent = 'Save changes';
-};
-
-// ---------- story viewer (hide detail) ----------
-let openStoryId = null;
-function openStory(id) { openStoryId = id; stopCamera(); $('#story').classList.remove('hidden'); renderStory(); }
-function closeStory() { openStoryId = null; $('#story').classList.add('hidden'); if (S.view === 'camera') startCamera(); }
-$('#story-close').onclick = closeStory;
-function renderStory() {
-  const h = S.hides.find(x => x.id === openStoryId); if (!h) return closeStory();
-  $('#story-img').src = h.photo;
-  $('#story-bars').innerHTML = Array.from({ length: h.pingCount }, (_, i) => `<i class="${i < h.pings.length ? 'on' : ''}"></i>`).join('');
-  const a = $('#story-avatar'); a.textContent = h.hider.name[0].toUpperCase(); a.style.background = h.hider.color;
-  $('#story-hider').textContent = h.isHider ? 'You hid this' : `${h.hider.name} hid this`;
-  $('#story-time').textContent = `${fmtTime(h.createdAt)} · area ${h.radius >= 1000 ? (h.radius / 1000).toFixed(1) + ' km' : h.radius + ' m'} · ${h.pings.length}/${h.pingCount} pings${h.moveCount ? ` · moved/renamed ${h.moveCount}×` : ''}${h.hintOutdated && h.status === 'active' ? ' · ⚠️ hint out of date' : ''}`;
-  $('#story-object').textContent = h.object;
-  const st = $('#story-status');
-  st.className = 'story-status ' + (h.status === 'found' ? 'found' : h.status === 'active' ? '' : 'over');
-  st.textContent = h.status === 'found' ? `🏆 Found by ${h.foundBy?.name}` : h.status === 'escaped' ? '🏃 Nobody found it' : h.status === 'cancelled' ? 'Hunt ended' : '🔍 Hunt is on';
-  renderCountdown();
-  const claims = $('#story-claims');
-  claims.innerHTML = (h.claims || []).map(c => `<div class="claim"><img src="${c.photo}"><div class="grow"><b>${esc(c.user.name)}</b> says they found it<div class="muted">${c.distance == null ? 'no GPS' : c.distance + ' m from your spot'}</div></div>
-    <button class="ok" data-acc="${c.id}">✓</button><button class="no" data-rej="${c.id}">✕</button></div>`).join('');
-  if (h.myClaim && h.myClaim.status === 'pending') claims.innerHTML = '<div class="claim"><div class="grow">⏳ Waiting for the hider to confirm your find…</div></div>';
-  $$('[data-acc]').forEach(b => b.onclick = () => reviewClaim(h.id, b.dataset.acc, true));
-  $$('[data-rej]').forEach(b => b.onclick = () => reviewClaim(h.id, b.dataset.rej, false));
-  const act = $('#story-actions'); act.innerHTML = '';
-  const btn = (label, cls, fn) => { const b = document.createElement('button'); b.className = cls; b.textContent = label; b.onclick = fn; act.appendChild(b); };
-  btn('🗺️ Map', 'btn-glass', () => focusHide(h.id));
-  if (h.status === 'active' && !h.isHider) {
-    btn('🌡️ Hot/Cold', 'btn-glass', () => heatCheck(h));
-    btn('🙌 I found it!', 'btn-red', () => { findTarget = h.id; $('#find-file').click(); });
-  }
-  if (h.canMove) btn('🔀 Move / rename', 'btn-red', () => openMoveSheet(h.id));
-  if (h.status === 'active' && h.isHider) btn('End hunt', 'btn-glass', async () => { if (confirm('End this hunt now?')) { try { await api(`/api/hides/${h.id}/end`, { body: {} }); } catch (e) { toast(e.message); } } });
-  if (h.foundPhoto) btn('📸 Proof', 'btn-glass', () => { $('#story-img').src = h.foundPhoto; });
-}
-function renderCountdown() {
-  const h = S.hides.find(x => x.id === openStoryId); if (!h) return;
-  const el = $('#story-countdown');
-  if (h.status !== 'active') el.textContent = h.foundAt ? `Found at ${fmtTime(h.foundAt)}` : '';
-  else if (h.nextPingAt) el.textContent = `📡 Ping ${h.pings.length + 1} in ${fmtIn(h.nextPingAt - Date.now())} (${fmtTime(h.nextPingAt)})${h.canMove ? ' · 🔀 you can move it until then' : ''}`;
-  else el.textContent = `⏳ Last chance! Hunt ends in ${fmtIn(h.endsAt - Date.now())}`;
-}
-async function reviewClaim(hid, cid, accept) {
-  try { await api(`/api/hides/${hid}/claims/${cid}`, { body: { accept } }); toast(accept ? 'Confirmed! 🏆' : 'Rejected - they keep hunting'); } catch (e) { toast(e.message); }
-}
-async function heatCheck(h) {
-  try {
-    const l = await getLoc();
-    const r = await api(`/api/hides/${h.id}/heat`, { body: { lat: l.lat, lng: l.lng } });
-    banner(`<div class="radar">${r.emoji}</div><div class="grow">You're ${r.band.toUpperCase()}!<div class="muted">One check per ping - use it wisely.</div></div>`);
-  } catch (e) { toast(e.message); }
-}
-let findTarget = null;
-$('#find-file').onchange = async e => {
-  const f = e.target.files[0]; e.target.value = ''; if (!f || !findTarget) return;
-  toast('Checking your location… 📍');
-  const fd = new FormData(); fd.append('photo', await shrink(f), 'found.jpg');
-  try { const l = await getLoc(); fd.append('lat', l.lat); fd.append('lng', l.lng); fd.append('accuracy', l.acc); } catch (err) { toast(err.message); }
-  try { const r = await api(`/api/hides/${findTarget}/find`, { body: fd }); r.result === 'accepted' ? (sonar(), banner(`<div class="radar">🏆</div><div class="grow">${esc(r.message)}</div>`)) : toast(r.message, 'y'); }
-  catch (err) { toast(err.message); }
-};
-
-boot();
+document.addEventListener('DOMContentLoaded', boot);

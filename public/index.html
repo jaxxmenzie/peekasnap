@@ -38,85 +38,237 @@
 
 <!-- ============ ONBOARDING ============ -->
 <section id="onboard" class="screen onboard hidden">
-  <div class="logo-blob">👀</div>
+  <img class="logo-img" src="/icons/icon-192.png" alt="">
   <h1>PeekaSnap</h1>
-  <p class="tag">Snap it. Hide it. Make your friends hunt for it.</p>
+  <p class="tag">Snap your friends. Then hunt them down.</p>
   <form id="signup-form" class="onboard-form">
-    <input id="signup-name" maxlength="24" placeholder="Your display name" autocomplete="nickname" required>
-    <button class="btn-dark" type="submit">Let's play</button>
+    <input id="signup-name" maxlength="24" placeholder="Display name" autocomplete="nickname" required>
+    <div class="at-input"><span>@</span><input id="signup-username" maxlength="20" placeholder="username" autocapitalize="none" autocomplete="username" spellcheck="false"></div>
+    <button class="btn-dark" type="submit">Let's go</button>
   </form>
-  <p class="fine">No password needed. Your name is saved on this device.</p>
+  <p class="fine">No password needed. Friends add you by your username.</p>
 </section>
 
 <!-- ============ MAIN APP ============ -->
 <section id="app" class="screen hidden">
   <header class="topbar">
-    <button id="me-btn" class="avatar-btn" title="You"></button>
-    <button id="group-pill" class="pill">👀 <span id="group-name">No group</span> ▾</button>
-    <button id="board-btn" class="round-btn" title="Leaderboard">🏆</button>
+    <button id="me-btn" class="avatar-btn" title="Profile"></button>
+    <div id="top-title" class="top-title"></div>
+    <button id="add-friend-btn" class="round-btn" title="Add friends">👤<i id="req-dot" class="dot small hidden"></i></button>
+    <button id="cam-flip" class="round-btn" title="Flip camera">🔄</button>
   </header>
 
-  <!-- CAMERA -->
+  <!-- CAMERA (home) -->
   <div id="view-camera" class="view">
     <video id="cam-video" autoplay playsinline muted></video>
-    <div id="cam-fallback" class="cam-fallback hidden">
-      <div class="big-emoji">📸</div>
-      <p>Tap the shutter to snap the object you want to hide</p>
-    </div>
-    <div class="cam-side">
-      <button id="cam-flip" class="round-btn glass" title="Flip camera">🔄</button>
-    </div>
-    <div id="cam-stories" class="story-strip floating"></div>
+    <div id="cam-fallback" class="cam-fallback hidden"><div class="big-emoji">📸</div><p>Tap the shutter to take a Snap</p></div>
+    <div id="hide-mode-pill" class="hide-mode-pill hidden">🫣 Snap the object you want to hide <button id="hide-mode-x">✕</button></div>
     <div class="cam-controls">
-      <button id="cam-upload" class="round-btn glass" title="Choose photo">🖼️</button>
-      <button id="shutter" class="shutter" aria-label="Take photo"></button>
-      <span class="spacer-48"></span>
+      <button id="cam-upload" class="round-btn glass" title="Camera roll">🖼️</button>
+      <button id="shutter" class="shutter" aria-label="Take Snap"></button>
+      <button id="cam-inbox" class="round-btn glass" title="New snaps">📩<i id="inbox-count" class="count hidden"></i></button>
     </div>
     <input id="file-capture" type="file" accept="image/*" capture="environment" hidden>
     <input id="file-pick" type="file" accept="image/*" hidden>
   </div>
 
-  <!-- MAP -->
+  <!-- SNAP MAP -->
   <div id="view-map" class="view hidden">
     <div id="map"></div>
     <button id="locate-btn" class="round-btn map-locate" title="My location">📍</button>
-    <div id="map-stories" class="story-strip map-strip"></div>
+    <div class="map-panel">
+      <div id="ghost-status" class="ghost-status"></div>
+      <button id="ghost-toggle" class="chip red">👻 Ghost mode</button>
+    </div>
   </div>
 
-  <!-- CHAT -->
-  <div id="view-chat" class="view hidden">
-    <div class="chat-head">
-      <div>
-        <div id="chat-title" class="chat-title">Group</div>
-        <div id="chat-sub" class="chat-sub"></div>
-      </div>
-      <button id="share-code" class="pill small">Invite</button>
+  <!-- CHAT LIST -->
+  <div id="view-chat" class="view light-top hidden">
+    <div class="list-head"><h2>Chat</h2><button id="new-group-btn" class="pill small">＋ Group</button></div>
+    <div id="chat-list" class="chat-list"></div>
+  </div>
+
+  <!-- STORIES -->
+  <div id="view-stories" class="view light-top hidden">
+    <div class="list-head"><h2>Stories</h2></div>
+    <div class="stories-scroll">
+      <div class="section-title">Friends</div>
+      <div id="story-bar" class="story-strip"></div>
+      <div class="section-title">My Story</div>
+      <div id="my-story" class="my-story"></div>
+      <div class="section-title">Active games</div>
+      <div id="story-games" class="story-strip"></div>
     </div>
-    <div id="chat-stories" class="story-strip light"></div>
-    <div id="chat-feed" class="chat-feed"></div>
-    <form id="chat-form" class="chat-form">
-      <button type="button" id="chat-cam" class="round-btn">📷</button>
-      <input id="chat-input" placeholder="Send a chat" autocomplete="off" maxlength="500">
-      <button class="send-btn" type="submit">➤</button>
-    </form>
-    <input id="chat-file" type="file" accept="image/*" capture="environment" hidden>
+  </div>
+
+  <!-- PLAY (games) -->
+  <div id="view-play" class="view light-top hidden">
+    <div class="list-head"><h2>Play</h2><button id="group-pill" class="pill small">👥 <span id="group-name">Pick a group</span> ▾</button></div>
+    <div class="play-scroll">
+      <div class="mode-cards">
+        <button id="mode-hide" class="mode-card hide"><span class="mode-emoji">🫣</span><b>Hide &amp; Seek</b><small>Snap an object, hide it, timed pings</small></button>
+        <button id="mode-hunt" class="mode-card hunt"><span class="mode-emoji">🏃</span><b>Manhunt</b><small>Hunters vs runners, live map pings</small></button>
+      </div>
+      <div id="play-hunt-card"></div>
+      <div class="section-title">Hide &amp; Seek in this group <button id="board-btn" class="link-btn">🏆 Leaderboard</button></div>
+      <div id="cam-stories" class="story-strip"></div>
+      <div class="play-actions"><button id="hide-new" class="btn-red">🫣 Hide something</button><button id="game-map-btn" class="btn-glass dark">🗺️ Game map</button></div>
+    </div>
   </div>
 
   <nav class="bottomnav">
-    <button data-view="map" class="nav-btn">🗺️<span>Map</span></button>
-    <button data-view="camera" class="nav-btn nav-cam active">📸<span>Camera</span></button>
+    <button data-view="map" class="nav-btn">📍<span>Map</span></button>
     <button data-view="chat" class="nav-btn">💬<span>Chat</span><i id="chat-dot" class="dot hidden"></i></button>
+    <button data-view="camera" class="nav-btn nav-cam active"><i class="cam-ring"></i><span>Camera</span></button>
+    <button data-view="stories" class="nav-btn">👥<span>Stories</span><i id="story-dot" class="dot hidden"></i></button>
+    <button data-view="play" class="nav-btn">🎮<span>Play</span><i id="play-dot" class="dot hidden"></i></button>
   </nav>
 </section>
 
-<!-- ============ SNAP PREVIEW ============ -->
-<section id="preview" class="overlay hidden">
-  <img id="preview-img" alt="">
-  <button id="preview-close" class="round-btn glass corner-tl">✕</button>
-  <div class="preview-actions">
-    <button id="preview-retake" class="btn-glass">Retake</button>
-    <button id="preview-hide" class="btn-red">Hide it 🫣</button>
+<!-- ============ SNAP EDITOR ============ -->
+<section id="editor" class="overlay hidden">
+  <div id="ed-stage" class="ed-stage">
+    <img id="ed-img" alt="">
+    <canvas id="ed-draw"></canvas>
+    <div id="ed-layer" class="ed-layer"></div>
   </div>
+  <button id="ed-close" class="round-btn glass corner-tl">✕</button>
+  <div class="ed-tools">
+    <button id="ed-text" class="round-btn glass" title="Caption">T</button>
+    <button id="ed-pen" class="round-btn glass" title="Draw">✏️</button>
+    <button id="ed-sticker" class="round-btn glass" title="Sticker">😀</button>
+    <button id="ed-undo" class="round-btn glass hidden" title="Undo">↩️</button>
+    <button id="ed-timer" class="round-btn glass timer-btn" title="Timer">⏱<small id="ed-timer-val">5</small></button>
+  </div>
+  <div id="ed-colors" class="ed-colors hidden"></div>
+  <div id="ed-stickers" class="ed-stickers hidden"></div>
+  <div class="ed-bottom">
+    <button id="ed-story" class="btn-glass">＋ Story</button>
+    <button id="ed-hide" class="btn-glass">🫣 Hide</button>
+    <button id="ed-send" class="btn-red send-to">Send To ➤</button>
+  </div>
+</section>
+
+<!-- ============ SEND TO ============ -->
+<section id="send-sheet" class="sheet-wrap hidden">
+  <div class="sheet tall">
+    <div class="grab"></div>
+    <div class="sheet-head"><h2>Send To…</h2><button class="x" data-close>✕</button></div>
+    <div class="sheet-body">
+      <label class="send-row story-row"><input type="checkbox" id="send-story"><span class="avatar story-av">＋</span><b class="grow">My Story</b><small>24h · friends</small></label>
+      <div class="section-title dark">Groups</div><div id="send-groups"></div>
+      <div class="section-title dark">Friends</div><div id="send-friends"></div>
+    </div>
+    <div class="send-bar"><div id="send-summary" class="grow"></div><button id="send-go" class="send-btn big">➤</button></div>
+  </div>
+</section>
+
+<!-- ============ SNAP VIEWER ============ -->
+<section id="snap-viewer" class="overlay hidden">
+  <img id="sv-snap-img" alt="">
+  <div class="snap-top"><div id="snap-from" class="grow"></div><div id="snap-ring" class="snap-ring"><svg viewBox="0 0 36 36"><circle cx="18" cy="18" r="15"/></svg><span id="snap-secs"></span></div></div>
+  <div id="snap-hint" class="snap-hint">Tap to close</div>
+</section>
+
+<!-- ============ CHAT THREAD ============ -->
+<section id="thread" class="overlay thread hidden">
+  <div class="thread-head">
+    <button id="thread-back" class="round-btn">‹</button>
+    <div id="thread-av" class="avatar"></div>
+    <div class="grow"><b id="thread-title"></b><div id="thread-sub" class="muted"></div></div>
+    <button id="thread-info" class="round-btn">⋯</button>
+  </div>
+  <div id="thread-feed" class="chat-feed"></div>
+  <div id="typing" class="typing hidden"><span></span><span></span><span></span> <em id="typing-who"></em></div>
+  <form id="thread-form" class="chat-form">
+    <button type="button" id="thread-cam" class="round-btn">📷</button>
+    <input id="thread-input" placeholder="Send a chat" autocomplete="off" maxlength="1000">
+    <button class="send-btn" type="submit">➤</button>
+  </form>
+  <input id="thread-file" type="file" accept="image/*" hidden>
+</section>
+
+<!-- ============ CONFIRM / ACTIONS ============ -->
+<section id="ask-sheet" class="sheet-wrap hidden">
+  <div class="sheet ask"><div class="grab"></div>
+    <div class="sheet-body"><h3 id="ask-title"></h3><p id="ask-body" class="muted"></p><div id="ask-actions"></div>
+      <button id="ask-cancel" class="btn-glass dark wide">Cancel</button></div></div>
+</section>
+
+<!-- ============ FRIENDS ============ -->
+<section id="friends-sheet" class="sheet-wrap hidden">
+  <div class="sheet tall">
+    <div class="grab"></div>
+    <div class="sheet-head"><h2>Add Friends</h2><button class="x" data-close>✕</button></div>
+    <div class="sheet-body">
+      <div class="at-input dark"><span>@</span><input id="friend-search" placeholder="Search usernames" autocapitalize="none" spellcheck="false"></div>
+      <div id="friend-results"></div>
+      <div id="friend-requests"></div>
+      <div class="section-title dark">My Friends</div>
+      <div id="friend-list"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ PROFILE ============ -->
+<section id="profile-sheet" class="sheet-wrap hidden">
+  <div class="sheet tall">
+    <div class="grab"></div>
+    <div class="sheet-head"><h2>Profile</h2><button class="x" data-close>✕</button></div>
+    <div class="sheet-body">
+      <div class="profile-top"><div id="profile-av" class="avatar xl"></div><div><b id="profile-name"></b><div id="profile-user" class="muted"></div></div></div>
+      <button id="share-username" class="btn-glass dark wide">🔗 Share my username</button>
+      <div class="setting"><div class="grow"><b>👻 Ghost Mode</b><div class="muted">When on, friends can't see you on the Map. Location is only shared during an active Manhunt.</div></div><label class="switch"><input type="checkbox" id="ghost-switch" checked><i></i></label></div>
+      <button id="notif-btn" class="btn-glass dark wide">🔔 Turn on alerts</button>
+      <button id="install-btn" class="btn-glass dark wide hidden">📲 Add to Home Screen</button>
+      <button id="groups-btn" class="btn-glass dark wide">👥 Groups</button>
+      <button id="signout-btn" class="btn-glass dark wide">Sign out on this device</button>
+    </div>
+  </div>
+</section>
+
+<!-- ============ FRIEND STORY VIEWER ============ -->
+<section id="sv" class="overlay story hidden">
+  <div id="sv-bars" class="story-bars"></div>
+  <div class="story-head"><div id="sv-av" class="avatar"></div><div class="grow"><b id="sv-name"></b><div id="sv-time" class="muted"></div></div><button id="sv-close" class="round-btn glass">✕</button></div>
+  <img id="sv-img" alt="">
+  <div id="sv-views" class="sv-views hidden"></div>
+  <div class="sv-tap left" id="sv-prev"></div><div class="sv-tap right" id="sv-next"></div>
+</section>
+
+<!-- ============ HIDE & SEEK GAME MAP ============ -->
+<section id="game-map" class="overlay hidden">
+  <div id="gmap"></div>
+  <div class="overlay-top"><button id="gmap-close" class="round-btn">‹</button><div class="pill">🫣 Hide &amp; Seek · <span id="gmap-group"></span></div><button id="gmap-locate" class="round-btn">📍</button></div>
+  <div id="map-stories" class="story-strip map-strip"></div>
+</section>
+
+<!-- ============ MANHUNT ============ -->
+<section id="hunt" class="overlay hunt hidden">
+  <div id="hmap"></div>
+  <div class="overlay-top">
+    <button id="hunt-close" class="round-btn">‹</button>
+    <div id="hunt-status" class="hunt-status"></div>
+    <button id="hunt-locate" class="round-btn">📍</button>
+  </div>
+  <div id="hunt-lobby" class="hunt-panel hidden"></div>
+  <div id="hunt-live" class="hunt-live hidden">
+    <div id="hunt-banner" class="hunt-banner"></div>
+    <div class="hunt-actions">
+      <button id="hunt-chat-btn" class="round-btn big">💬<i id="hunt-chat-dot" class="dot hidden"></i></button>
+      <button id="hunt-tag" class="tag-btn">🎯 TAG</button>
+      <button id="hunt-board-btn" class="round-btn big">🏆</button>
+    </div>
+  </div>
+</section>
+<section id="hunt-board" class="sheet-wrap hidden">
+  <div class="sheet"><div class="grab"></div><div class="sheet-head"><h2>🏆 Scoreboard</h2><button class="x" data-close>✕</button></div>
+    <div class="sheet-body"><div id="hunt-board-list"></div><div class="hint-text">Tag = 10 · Runner: 3 per ping survived, +20 for surviving to the end</div><div id="hunt-host-tools"></div></div></div>
+</section>
+<section id="hunt-chat" class="sheet-wrap hidden">
+  <div class="sheet tall"><div class="grab"></div><div class="sheet-head"><h2>💬 Game chat</h2><button class="x" data-close>✕</button></div>
+    <div id="hunt-feed" class="chat-feed sheet-feed"></div>
+    <form id="hunt-chat-form" class="chat-form"><input id="hunt-chat-input" placeholder="Message the game" autocomplete="off" maxlength="500"><button class="send-btn" type="submit">➤</button></form></div>
 </section>
 
 <!-- ============ CREATE HIDE SHEET ============ -->
@@ -203,7 +355,7 @@
 <section id="groups-sheet" class="sheet-wrap hidden">
   <div class="sheet">
     <div class="grab"></div>
-    <div class="sheet-head"><h2>Your groups</h2><button class="x" data-close>✕</button></div>
+    <div class="sheet-head"><h2>Groups</h2><button class="x" data-close>✕</button></div>
     <div class="sheet-body">
       <div id="group-list" class="group-list"></div>
       <form id="join-form" class="inline-form">
@@ -215,8 +367,6 @@
         <input id="create-name" placeholder="New group name" maxlength="32">
         <button class="btn-red">Create</button>
       </form>
-      <button id="notif-btn" class="btn-glass dark wide">🔔 Turn on ping alerts</button>
-      <button id="install-btn" class="btn-glass dark wide hidden">📲 Add to Home Screen</button>
       <div id="groups-err" class="err"></div>
     </div>
   </div>
@@ -277,5 +427,7 @@
 <script src="/vendor/leaflet/leaflet.js"></script>
 <script src="/socket.io/socket.io.js"></script>
 <script src="/app.js"></script>
+<script src="/game.js"></script>
+<script src="/hunt.js"></script>
 </body>
 </html>

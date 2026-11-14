@@ -13,6 +13,9 @@ const PORT = process.env.PORT || 3000;
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
 const DB_FILE = path.join(DATA_DIR, 'db.json');
+// Clock (tests can move it forward when ALLOW_TEST_CLOCK=1 to check 24h expiry, game timers, etc.)
+let clockOffset = 0;
+const now = () => Date.now() + clockOffset;
 const FIND_RADIUS_M = Number(process.env.FIND_RADIUS_M || 25); // GPS distance that auto-accepts a find
 const TICK_MS = Number(process.env.TICK_MS || 2000);
 // Pings never fire sooner than this after the hiding spot is marked (on hide AND after each move). Default 5 min.
@@ -21,7 +24,7 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 // ---------- storage ----------
-let db = { users: {}, groups: {}, hides: {}, messages: [], subs: {} };
+let db = { users: {}, groups: {}, hides: {}, messages: [], subs: {}, friends: {}, snaps: {}, stories: {}, reads: {}, locs: {}, streaks: {}, hunts: {} };
 try { db = Object.assign(db, JSON.parse(fs.readFileSync(DB_FILE, 'utf8'))); } catch (_) {}
 let saveTimer = null;
 function save() {
@@ -42,9 +45,10 @@ webpush.setVapidDetails(process.env.VAPID_SUBJECT || 'mailto:peekasnap@example.c
 // send a push to group members (optionally only some of them); stale subscriptions are dropped
 function pushToGroup(groupId, payload, { only, except } = {}) {
   const g = db.groups[groupId]; if (!g) return;
-  for (const uid of g.members) {
-    if (except && uid === except) continue;
-    if (only && uid !== only) continue;
+  pushToUsers(g.members.filter(uid => !(except && uid === except) && !(only && uid !== only)), payload);
+}
+function pushToUsers(uids, payload) {
+  for (const uid of uids) {
     for (const sub of (db.subs[uid] || [])) {
       webpush.sendNotification(sub, JSON.stringify(payload), { TTL: 600, urgency: 'high' }).catch(err => {
         if (err.statusCode === 404 || err.statusCode === 410) { db.subs[uid] = (db.subs[uid] || []).filter(x => x.endpoint !== sub.endpoint); save(); }
@@ -95,7 +99,7 @@ function heatBand(d) {
 }
 
 // ---------- serialization (never leak the hidden spot to seekers) ----------
-const publicUser = u => u && { id: u.id, name: u.name, color: u.color };
+const publicUser = u => u && { id: u.id, name: u.name, username: u.username, color: u.color };
 function publicHide(h, viewerId) {
   const isHider = h.hiderId === viewerId;
   const done = h.status !== 'active';
@@ -190,9 +194,9 @@ function hideAccess(req, res, next) {
 const bad = (res, msg) => res.status(400).json({ error: msg });
 
 function postMessage(groupId, msg) {
-  const m = { id: id(), groupId, createdAt: Date.now(), type: 'chat', ...msg };
+  const m = { id: id(), groupId, chatId: groupId, createdAt: now(), type: 'chat', ...msg };
   db.messages.push(m);
-  if (db.messages.length > 5000) db.messages.splice(0, db.messages.length - 5000);
+  if (db.messages.length > 20000) db.messages.splice(0, db.messages.length - 20000);
   save();
   io.to('g:' + groupId).emit('message', serializeMsg(m));
   return m;
@@ -208,9 +212,17 @@ const COLORS = ['#FF3B5C', '#00C2FF', '#9B5CFF', '#00D27A', '#FF8A00', '#FF4FD8'
 app.post('/api/signup', (req, res) => {
   const name = String(req.body.name || '').trim().slice(0, 24);
   if (name.length < 2) return bad(res, 'Pick a name with at least 2 characters');
-  const u = { id: id(), name, token: id(16), color: COLORS[crypto.randomInt(COLORS.length)], createdAt: Date.now() };
+  let username = String(req.body.username || '').trim().toLowerCase().replace(/^@/, '');
+  if (username) {
+    if (!/^[a-z0-9_.]{3,20}$/.test(username)) return bad(res, 'Usernames are 3-20 letters, numbers, _ or .');
+    if (Object.values(db.users).some(x => x.username === username)) return res.status(409).json({ error: 'That username is taken' });
+  } else {
+    const base = name.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 14) || 'player';
+    do { username = base + crypto.randomInt(100, 9999); } while (Object.values(db.users).some(x => x.username === username));
+  }
+  const u = { id: id(), name, username, token: id(16), color: COLORS[crypto.randomInt(COLORS.length)], shareLocation: false, createdAt: now() };
   db.users[u.id] = u; save();
-  res.json({ user: publicUser(u), token: u.token });
+  res.json({ user: { ...publicUser(u), shareLocation: false }, token: u.token });
 });
 app.get('/api/push/key', (req, res) => res.json({ publicKey: vapid.publicKey }));
 app.post('/api/push/subscribe', auth, (req, res) => {
@@ -230,13 +242,14 @@ app.post('/api/push/unsubscribe', auth, (req, res) => {
 app.get('/api/me', auth, (req, res) => {
   const groups = Object.values(db.groups).filter(g => g.members.includes(req.user.id))
     .map(g => ({ id: g.id, name: g.name, code: g.code, emoji: g.emoji, memberCount: g.members.length }));
-  res.json({ user: publicUser(req.user), groups });
+  res.json({ user: { ...publicUser(req.user), shareLocation: !!req.user.shareLocation }, groups });
 });
 app.post('/api/groups', auth, (req, res) => {
   const name = String(req.body.name || '').trim().slice(0, 32);
   if (!name) return bad(res, 'Group needs a name');
-  const g = { id: id(), name, code: joinCode(), emoji: String(req.body.emoji || '👀').slice(0, 4), ownerId: req.user.id, members: [req.user.id], createdAt: Date.now() };
+  const g = { id: id(), name, code: joinCode(), emoji: String(req.body.emoji || '👀').slice(0, 4), ownerId: req.user.id, members: [req.user.id], createdAt: now() };
   db.groups[g.id] = g; save();
+  io.in('u:' + req.user.id).socketsJoin('g:' + g.id);
   postMessage(g.id, { type: 'system', text: `${req.user.name} created the group. Share code ${g.code} to invite friends!` });
   res.json({ group: g });
 });
@@ -246,12 +259,14 @@ app.post('/api/groups/join', auth, (req, res) => {
   if (!g) return res.status(404).json({ error: 'No group with that code' });
   if (!g.members.includes(req.user.id)) {
     g.members.push(req.user.id); save();
+    io.in('u:' + req.user.id).socketsJoin('g:' + g.id);
     postMessage(g.id, { type: 'system', text: `${req.user.name} joined the group 👋` });
   }
   res.json({ group: g });
 });
 app.post('/api/groups/:gid/leave', auth, member, (req, res) => {
   req.group.members = req.group.members.filter(m => m !== req.user.id); save();
+  io.in('u:' + req.user.id).socketsLeave('g:' + req.group.id);
   postMessage(req.group.id, { type: 'system', text: `${req.user.name} left the group` });
   res.json({ ok: true });
 });
@@ -260,7 +275,7 @@ app.get('/api/groups/:gid', auth, member, (req, res) => {
   res.json({
     group: { id: g.id, name: g.name, code: g.code, emoji: g.emoji, members: g.members.map(m => publicUser(db.users[m])).filter(Boolean) },
     hides: Object.values(db.hides).filter(h => h.groupId === g.id).sort((a, b) => b.createdAt - a.createdAt).slice(0, 50).map(h => publicHide(h, req.user.id)),
-    messages: db.messages.filter(m => m.groupId === g.id).slice(-100).map(serializeMsg),
+    messages: db.messages.filter(m => (m.chatId || m.groupId) === g.id).slice(-100).map(serializeMsg),
     leaderboard: leaderboard(g.id),
   });
 });
@@ -287,19 +302,19 @@ app.post('/api/groups/:gid/hides', auth, member, upload.single('photo'), (req, r
   if (!(intervalMin >= 0.05 && intervalMin <= 1440)) return bad(res, 'Ping interval must be between 3 seconds and 24 hours');
   const pingCount = Math.round(+b.pingCount || 3);
   if (!(pingCount >= 1 && pingCount <= 20)) return bad(res, 'Pings must be 1-20');
-  let firstPingAt = b.firstPingAt ? (isNaN(+b.firstPingAt) ? Date.parse(b.firstPingAt) : +b.firstPingAt) : Date.now() + intervalMin * 60000;
+  let firstPingAt = b.firstPingAt ? (isNaN(+b.firstPingAt) ? Date.parse(b.firstPingAt) : +b.firstPingAt) : now() + intervalMin * 60000;
   if (!Number.isFinite(firstPingAt)) return bad(res, 'Bad first ping time');
-  firstPingAt = Math.max(firstPingAt, Date.now() + MIN_PING_DELAY_MS); // at least 5 min after the spot is marked
+  firstPingAt = Math.max(firstPingAt, now() + MIN_PING_DELAY_MS); // at least 5 min after the spot is marked
   const h = {
     id: id(), groupId: req.group.id, hiderId: req.user.id, object, photo: '/uploads/' + req.file.filename,
     center: pt(center), radius, spot: pt(spot), firstPingAt, nextAt: firstPingAt, intervalMin, pingCount,
-    pings: [], claims: [], heatChecks: {}, moves: [], lastMovePing: 0, movedAtPing: 0, status: 'active', createdAt: Date.now(),
+    pings: [], claims: [], heatChecks: {}, moves: [], lastMovePing: 0, movedAtPing: 0, status: 'active', createdAt: now(),
   };
   db.hides[h.id] = h; save();
   broadcastHide(h);
   postMessage(h.groupId, { type: 'hide', hideId: h.id, userId: req.user.id, photo: h.photo,
     firstPingAt, text: `${req.user.name} hid a ${object}! 🫣 Can you find it?` });
-  pushToGroup(h.groupId, { title: `🫣 ${req.user.name} hid a ${object}!`, body: `First ping in ${Math.max(1, Math.round((firstPingAt - Date.now()) / 60000))} min. Go hunt!`, tag: 'hide-' + h.id, url: '/#chat' }, { except: req.user.id });
+  pushToGroup(h.groupId, { title: `🫣 ${req.user.name} hid a ${object}!`, body: `First ping in ${Math.max(1, Math.round((firstPingAt - now()) / 60000))} min. Go hunt!`, tag: 'hide-' + h.id, url: '/#chat' }, { except: req.user.id });
   res.json({ hide: publicHide(h, req.user.id) });
 });
 app.get('/api/hides/:hid', auth, hideAccess, (req, res) => res.json({ hide: publicHide(req.hide, req.user.id) }));
@@ -318,7 +333,7 @@ app.post('/api/hides/:hid/heat', auth, hideAccess, (req, res) => {
 });
 
 function markFound(h, userId, photo) {
-  h.status = 'found'; h.foundBy = userId; h.foundAt = Date.now(); h.foundPhoto = photo;
+  h.status = 'found'; h.foundBy = userId; h.foundAt = now(); h.foundPhoto = photo;
   h.claims.forEach(c => { if (c.status === 'pending') c.status = c.userId === userId && c.photo === photo ? 'accepted' : 'closed'; });
   save();
   broadcastHide(h);
@@ -337,7 +352,7 @@ app.post('/api/hides/:hid/find', auth, hideAccess, upload.single('photo'), (req,
   const photo = '/uploads/' + req.file.filename;
   const loc = { lat: req.body.lat, lng: req.body.lng };
   const d = validPoint(loc) ? distanceM(pt(loc), h.spot) : null;
-  const claim = { id: id(), userId: req.user.id, photo, at: Date.now(), distance: d == null ? null : Math.round(d), status: 'pending' };
+  const claim = { id: id(), userId: req.user.id, photo, at: now(), distance: d == null ? null : Math.round(d), status: 'pending' };
   h.claims.push(claim);
   if (d != null && d <= FIND_RADIUS_M) {
     markFound(h, req.user.id, photo);
@@ -369,7 +384,7 @@ app.post('/api/hides/:hid/move', auth, hideAccess, upload.single('photo'), (req,
   if (h.status !== 'active') return bad(res, 'This round is over');
   if (!h.pings.length) return bad(res, 'You can move it after the first ping');
   if (!canMove(h)) return res.status(409).json({ error: 'You already moved it this ping. Wait for the next ping!' });
-  const change = { atPing: h.pings.length, at: Date.now(), moved: false, renamed: false, newPhoto: false };
+  const change = { atPing: h.pings.length, at: now(), moved: false, renamed: false, newPhoto: false };
   if (b.spotLat != null && b.spotLat !== '') {
     const spot = { lat: b.spotLat, lng: b.spotLng };
     if (!validPoint(spot)) return bad(res, 'Bad new spot');
@@ -385,12 +400,12 @@ app.post('/api/hides/:hid/move', auth, hideAccess, upload.single('photo'), (req,
   if (change.moved) {
     h.movedAtPing = h.pings.length; h.heatChecks = {}; // old hint is stale; fresh hot/cold check
     // the next ping (or the end of the hunt, after the last ping) waits at least 5 min after the new spot is marked
-    if (h.pings.length < h.pingCount) h.nextAt = Math.max(nextPingAt(h), Date.now() + MIN_PING_DELAY_MS);
-    else h.endAt = Math.max(endsAt(h), Date.now() + MIN_PING_DELAY_MS);
+    if (h.pings.length < h.pingCount) h.nextAt = Math.max(nextPingAt(h), now() + MIN_PING_DELAY_MS);
+    else h.endAt = Math.max(endsAt(h), now() + MIN_PING_DELAY_MS);
   }
   save(); broadcastHide(h);
   const what = [change.moved && 'moved it 🔀', change.renamed && `renamed it to "${h.object}"`, change.newPhoto && 'snapped a new photo'].filter(Boolean).join(', ');
-  pushToGroup(h.groupId, { title: '🔀 It moved!', body: `${req.user.name} ${what.replace(' 🔀', '')}${change.renamed ? '' : ` (the ${h.object})`}`, tag: 'hide-' + h.id, url: '/#map' }, { except: req.user.id });
+  pushToGroup(h.groupId, { title: '🔀 It moved!', body: `${req.user.name} ${what.replace(' 🔀', '')}${change.renamed ? '' : ` (the ${h.object})`}`, tag: 'hide-' + h.id, url: '/#play' }, { except: req.user.id });
   io.to('g:' + h.groupId).emit('moved', { hideId: h.id, object: h.object, oldName, moved: change.moved, renamed: change.renamed, newPhoto: change.newPhoto, hider: publicUser(req.user) });
   postMessage(h.groupId, { type: 'move', hideId: h.id, photo: h.photo, text: `🔀 ${req.user.name} ${what}${change.renamed ? '' : ` (the ${h.object})`}!${change.moved ? ` The old hint circle is out of date. Next ping (pointing to the new spot) at the earliest in ${MIN_PING_DELAY_MS >= 60000 ? Math.round(MIN_PING_DELAY_MS / 60000) + ' min' : Math.round(MIN_PING_DELAY_MS / 1000) + ' s'}.` : ''}` });
   res.json({ hide: publicHide(h, req.user.id) });
@@ -410,24 +425,24 @@ app.post('/api/hides/:hid/end', auth, hideAccess, (req, res) => {
 function firePing(h) {
   const k = h.pings.length + 1;
   const hint = makeHint(h, k);
-  const p = { n: k, at: Date.now(), ...hint };
+  const p = { n: k, at: now(), ...hint };
   h.pings.push(p);
   h.nextAt = p.at + h.intervalMin * 60000;
   if (k >= h.pingCount) h.endAt = p.at + h.intervalMin * 60000;
   save();
   broadcastHide(h);
   io.to('g:' + h.groupId).emit('ping', { hideId: h.id, object: h.object, n: k, of: h.pingCount, hint, hider: publicUser(db.users[h.hiderId]), canMove: true });
-  pushToGroup(h.groupId, { title: `📡 Ping ${k}/${h.pingCount}: ${h.object}`, body: `It's within ${hint.radius} m of the new circle. Hot/cold unlocked!`, tag: 'hide-' + h.id, url: '/#map' }, { except: h.hiderId });
-  pushToGroup(h.groupId, { title: `📡 Ping ${k}/${h.pingCount}: your ${h.object}`, body: 'Seekers got a new hint. Open now to move or rename it before the next ping!', tag: 'hide-' + h.id, url: '/#map' }, { only: h.hiderId });
+  pushToGroup(h.groupId, { title: `📡 Ping ${k}/${h.pingCount}: ${h.object}`, body: `It's within ${hint.radius} m of the new circle. Hot/cold unlocked!`, tag: 'hide-' + h.id, url: '/#play' }, { except: h.hiderId });
+  pushToGroup(h.groupId, { title: `📡 Ping ${k}/${h.pingCount}: your ${h.object}`, body: 'Seekers got a new hint. Open now to move or rename it before the next ping!', tag: 'hide-' + h.id, url: '/#play' }, { only: h.hiderId });
   postMessage(h.groupId, { type: 'ping', hideId: h.id, text: `📡 PING ${k}/${h.pingCount} for the ${h.object}! It's within ${hint.radius} m of the new circle. Hot/cold check unlocked.` });
 }
 function tick() {
-  const now = Date.now();
+  const t = now();
   for (const h of Object.values(db.hides)) {
     if (h.status !== 'active') continue;
     const due = nextPingAt(h);
-    if (due && now >= due) firePing(h);
-    else if (!due && now >= endsAt(h)) {
+    if (due && t >= due) firePing(h);
+    else if (!due && t >= endsAt(h)) {
       h.status = 'escaped'; save(); broadcastHide(h);
       postMessage(h.groupId, { type: 'system', text: `⏰ Time's up! Nobody found ${db.users[h.hiderId].name}'s ${h.object}. +10 for the hider. Spot revealed on the map.` });
     }
@@ -441,11 +456,25 @@ io.use((socket, next) => {
   if (!u) return next(new Error('unauthorized'));
   socket.data.userId = u.id; next();
 });
+const userRoom = uid => 'u:' + uid;
 io.on('connection', socket => {
   const join = () => Object.values(db.groups).filter(g => g.members.includes(socket.data.userId)).forEach(g => socket.join('g:' + g.id));
   join();
+  socket.join(userRoom(socket.data.userId));
   socket.on('refresh-groups', join);
+  socket.on('typing', d => social.typing(socket.data.userId, d && d.chatId));
 });
+
+// ---------- Snapchat-style social layer + Manhunt mode ----------
+const ctx = { app, io, db, save, now, id, auth, member, bad, upload, publicUser, serializeMsg, pushToUsers, postMessage, distanceM, offsetPoint, validPoint, pt,
+  UPLOAD_DIR, DATA_DIR, userRoom };
+const social = require('./lib/social')(ctx);
+ctx.social = social;
+const manhunt = require('./lib/manhunt')(ctx);
+setInterval(() => { social.tick(); manhunt.tick(); }, TICK_MS);
+if (process.env.ALLOW_TEST_CLOCK === '1') {
+  app.post('/api/test/clock', (req, res) => { clockOffset += Number(req.body.advanceMs) || 0; social.tick(); manhunt.tick(); tick(); res.json({ now: now() }); });
+}
 
 app.use((err, req, res, next) => { console.error(err); res.status(500).json({ error: err.message || 'Server error' }); });
 server.listen(PORT, () => console.log(`PeekaSnap running on http://localhost:${PORT}`));

@@ -1,7 +1,7 @@
 /* PeekaSnap service worker: app-shell cache, offline fallback, push + notification clicks */
-const VERSION = 'peekasnap-v3';
+const VERSION = 'peekasnap-v4';
 const SHELL = [
-  '/', '/index.html', '/styles.css', '/app.js', '/manifest.json', '/offline.html', '/icon.svg',
+  '/', '/index.html', '/styles.css', '/app.js', '/game.js', '/hunt.js', '/manifest.json', '/offline.html', '/icon.svg',
   '/icons/icon-192.png', '/icons/icon-512.png', '/icons/maskable-512.png', '/icons/apple-touch-icon.png', '/icons/favicon-32.png',
   '/vendor/leaflet/leaflet.css', '/vendor/leaflet/leaflet.js', '/socket.io/socket.io.js',
 ];

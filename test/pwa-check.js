@@ -42,7 +42,7 @@ let pass = 0, fail = 0; const ok = (c, m) => { c ? pass++ : fail++; console.log(
   await page.evaluate(() => { const e = new Event('beforeinstallprompt'); e.prompt = () => { window.__prompted = true; }; e.userChoice = Promise.resolve({ outcome: 'accepted' }); window.dispatchEvent(e); });
   await page.waitForSelector('#install-card:not(.hidden)', { timeout: 6000 });
   ok(await page.isVisible('#install-go'), 'Android: Install button shown after beforeinstallprompt');
-  await wait(600); await page.screenshot({ path: path.join(OUT, '16-install-prompt-android.png') }); console.log('saved 16-install-prompt-android.png');
+  await wait(600); await page.screenshot({ path: path.join(OUT, '26-install-prompt-android.png') }); console.log('saved 26-install-prompt-android.png');
   await page.click('#install-go'); await wait(300);
   ok(await page.evaluate(() => window.__prompted === true) && await page.isHidden('#install-card'), 'Install button triggers the native prompt and hides the card');
   // offline
@@ -60,7 +60,7 @@ let pass = 0, fail = 0; const ok = (c, m) => { c ? pass++ : fail++; console.log(
   const ip = await ictx.newPage(); await ip.goto(BASE + '/#camera');
   await ip.waitForSelector('#install-card:not(.hidden)', { timeout: 8000 });
   ok(await ip.isVisible('#install-ios') && await ip.isHidden('#install-go'), 'iPhone Safari: shows "Share → Add to Home Screen" guide (no Install button)');
-  await wait(600); await ip.screenshot({ path: path.join(OUT, '17-install-guide-iphone.png') }); console.log('saved 17-install-guide-iphone.png');
+  await wait(600); await ip.screenshot({ path: path.join(OUT, '27-install-guide-iphone.png') }); console.log('saved 27-install-guide-iphone.png');
   await ip.click('#install-later'); await ip.reload(); await wait(3500);
   ok(await ip.isHidden('#install-card'), '"Not now" snoozes the prompt');
   await ictx.close();

@@ -1,25 +1,39 @@
-# PeekaSnap 👀 — photo hide & seek
+# PeekaSnap 👀 — snap your friends, then hunt them down
 
-Snap a photo of an object, hide it somewhere inside a play area you draw on the map, and your group hunts for it.
-Timed **pings** alert everyone and shrink a hint circle around the hiding spot. First seeker to get there and snap proof wins.
-Mobile-first, Snapchat-style UI in **black & red** (camera home screen, bottom nav, story bubbles, group chat, dark map).
+A Snapchat-style social app in **black & red**, with two location games built in: **Hide & Seek** and **Manhunt**.
+Installable to your Home Screen with push alerts.
 
 ## Run it
 
 ```bash
 npm install
 npm start            # http://localhost:3000   (PORT=xxxx to change)
-npm test             # end-to-end test: groups, hide, pings, hot/cold, find check, leaderboard
+npm test             # smoke (hide & seek) + social + manhunt end-to-end tests
+node test/pwa-check.js     # installable-app checks (Chrome)
 node test/screenshots.js   # regenerate screenshots (needs Chrome at /usr/bin/google-chrome or CHROME=...)
 ```
 
-Needs Node 18+. Optional env vars: `PORT`, `DATA_DIR`, `UPLOAD_DIR`, `FIND_RADIUS_M` (default 25), `MIN_PING_DELAY_MS` (default 300000 = 5 min; the tests shorten it). No database to install: data lives in `data/db.json`, photos in `uploads/`.
+Needs Node 18+. Optional env vars: `PORT`, `DATA_DIR`, `UPLOAD_DIR`, `FIND_RADIUS_M` (default 25), `MIN_PING_DELAY_MS` (default 300000 = 5 min), `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY`/`VAPID_SUBJECT` (push), `ALLOW_TEST_CLOCK=1` (tests only). No database to install: data lives in `data/db.json`, photos in `uploads/` (snaps in a private `data/snaps/`).
 
-## How to play
+## The app
 
-1. Enter a display name (no password; it's remembered on your phone).
-2. **Groups** (tap the pill at the top): create a group and share its 6-letter code or invite link (`/?join=CODE`), or join one. Switch groups any time; every group has its own hides, chat, and leaderboard.
-3. **Hide**: on the Camera tab, snap the object → *Hide it* → name it, set the play area (🎯 center + radius slider), mark the hiding spot (🫣: tap *I'm at the hiding spot*, drag it, or tap the map), and pick the ping schedule (first ping in X min or at a set time, then every N min, for N pings). **The first ping is always at least 5 minutes after you mark the spot**, so you have time to get away. Anyone in the group can be the hider.
+Bottom nav: **Map · Chat · Camera (home) · Stories · Play**.
+
+- **Sign up** with a display name and a unique `@username` (no password; remembered on the device).
+- **Friends**: search by username, send/accept requests (👤 top right), share an add-me link (`/?add=username`). 🔥 streaks count days you both snapped each other.
+- **Snaps**: the camera opens first. Snap, then add a caption, draw (colors + undo), drop emoji stickers, and set a timer (1–10 s or ∞). Send to friends, groups, and/or **My Story**. Snaps open once with a countdown ring, can be replayed once (within 10 min), then are deleted from the server. Unopened snaps expire after 30 days (group snaps after 24 h). Screenshot blocking isn't possible on the web.
+- **Chat**: 1:1 (friends only) and group chats with text and photos, typing indicator, Snapchat-style statuses (New Snap / New Chat / Delivered / Opened) and read receipts.
+- **Deleting**: swipe a chat left or long-press it to **delete the conversation for you** (the other person keeps theirs; it comes back only if someone sends something new). Long-press a message: if you sent it, **unsend it for everyone** (unsending an unopened snap pulls it from their inbox); otherwise delete it just for you. Group chats can also be deleted from your list, and **Leave group** (⋯ in the chat) removes it for good. Every delete asks for confirmation first.
+- **Stories**: My Story (24 h, see who viewed, delete), friends' stories bar with tap-through viewer.
+- **Snap Map**: friends who share their location. **Ghost Mode is on by default**; you choose to share. During an active Manhunt your location is shared with that game only.
+- **Groups**: create or join with a 6-letter code / invite link (`/?join=CODE`). Groups have their own chat and play both games.
+
+## Play tab
+
+### Game mode 1: Hide & Seek
+
+1. **Groups** (the group pill on the Play tab): create a group and share its 6-letter code or invite link (`/?join=CODE`), or join one. Switch groups any time; every group has its own hides, chat, and leaderboard.
+2. **Hide**: Play → *Hide something* (or snap anything and tap 🫣 *Hide* in the editor) → name it, set the play area (🎯 center + radius slider), mark the hiding spot (🫣: tap *I'm at the hiding spot*, drag it, or tap the map), and pick the ping schedule (first ping in X min or at a set time, then every N min, for N pings). **The first ping is always at least 5 minutes after you mark the spot**, so you have time to get away. Anyone in the group can be the hider.
 4. **Seek**: open the hide from the story bubbles. You see the photo and the play area, never the exact spot.
 5. **Pings**: at each scheduled time everyone in the group gets a red banner, a sonar sound, a vibration, and a system notification (if alerts are on). Each ping draws a smaller red hint circle that always contains the spot (radius × 0.6 per ping, min 30 m, centered a random offset from the spot) and unlocks **one hot/cold check** (🔥 ≤25 m, hot ≤75 m, warm ≤200 m, cool ≤500 m, cold).
 6. **Found it**: tap *I found it!* and snap a proof photo. The server compares your GPS with the hidden spot. Within **25 m** the find is accepted automatically. Otherwise it goes to the hider, who sees the photo and distance and can confirm ✓ or reject ✕.
@@ -27,6 +41,16 @@ Needs Node 18+. Optional env vars: `PORT`, `DATA_DIR`, `UPLOAD_DIR`, `FIND_RADIU
 8. If nobody finds it within one interval after the last ping, the hider "escapes". The spot is revealed on the map once a round ends.
 
 **Points:** a find = 10 + 5 per unused ping · the hider gets 3 per ping survived · an escape = +10.
+
+### Game mode 2: Manhunt
+
+1. Play → **Manhunt** opens a lobby for the current group. Others tap *Join*.
+2. The host sets the play-area circle (center on me, or tap the map; radius), game length, ping interval (default 5 min; first ping 5 min after start), runner head start (default 2 min), number of hunters, whether hunters are shown to runners at pings, and whether tagged runners become hunters or spectators. Teams are random or picked by the host.
+3. **Start**: runners get the head start (hunters see a locked TAG countdown). Location is sent only while the game is running.
+4. **Pings**: every interval, hunters get all runners' current locations as markers that fade over time (and runners see hunters if that option is on). Everyone gets an alert. Teammates see each other live.
+5. **Out of bounds**: a runner who leaves the circle is warned and instantly revealed to hunters.
+6. **Tag**: a hunter taps 🎯 TAG within **15 m** of a runner (by GPS) and it counts. If GPS can't confirm, the hunter picks the runner and that runner confirms or denies.
+7. Hunters win when every runner is caught; runners win if anyone survives the timer. Live scoreboard (tag = 10, 3 per ping survived, +20 for surviving), game chat, and push + in-app alerts for start, release, pings, tags, and the end.
 
 ## Put it on your Home Screen (installable app)
 
@@ -53,13 +77,14 @@ Run a single instance. Ping timers and the JSON store live in one process.
 
 ## Tech
 
-- `server.js`: Express REST API, Socket.IO realtime (hides, pings, chat, found/claim events), multer photo uploads, JSON-file persistence, and a scheduler that ticks every 2 s.
-- `public/`: vanilla JS single-page app (no build step), Leaflet + OpenStreetMap maps, `getUserMedia` camera with an `<input type=file capture=environment>` fallback, Web Audio sonar, Notification API, and a PWA manifest (Add to Home Screen).
-- The hidden spot is never sent to seekers while a round is active. Distance checks happen on the server.
+- `server.js`: Express REST API, Socket.IO realtime (per-user and per-group rooms), multer uploads, JSON-file persistence, Web Push (VAPID), and the Hide & Seek scheduler. `lib/social.js`: friends, snaps, chats, deleting, stories, Snap Map. `lib/manhunt.js`: Manhunt lobby, timers, pings, tags, scoring.
+- `public/`: vanilla JS single-page app (no build step): `app.js` (social core), `game.js` (Hide & Seek), `hunt.js` (Manhunt). Leaflet + OpenStreetMap, `getUserMedia` camera with a file-input fallback, service worker (offline shell + push), PWA manifest.
+- Hidden spots are never sent to seekers while a round is active, and runners' positions only go to hunters at pings or when out of bounds. Distance checks happen on the server.
 
-## Limitations (v1)
+## Limitations
 
-- Sign-in is name-only; whoever has the device token is that player. Photo URLs are unguessable but not access-controlled.
-- Browser notifications only fire while the page is open or in a recent background tab. True background push (Web Push/VAPID) isn't implemented, and iOS needs the app added to the Home Screen for notifications.
-- GPS can be off by 5–30 m, especially indoors, which is why the hider can confirm finds manually.
-- Uses the public OpenStreetMap tile server, which is fine for a small group but not for heavy traffic.
+- Sign-in is username-only; whoever has the device token is that user. Story and chat photo URLs are unguessable but not access-controlled (snap photos are private and served once).
+- No screenshot detection or blocking (browsers don't allow it).
+- GPS can be off by 5–30 m, which is why tags and finds have a confirm fallback. Background location doesn't run on iOS/Android web when the app is closed, so keep the app open during a Manhunt.
+- On Render's free plan the data file is wiped on every deploy/restart, and the service sleeps when idle (first load can take ~1 min).
+- Uses the public OpenStreetMap tile server: fine for a small group, not heavy traffic.
