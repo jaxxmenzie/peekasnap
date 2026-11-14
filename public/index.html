@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#000000">
+<meta name="color-scheme" content="dark">
+<meta name="description" content="Snap an object, hide it, and make your friends hunt for it.">
+<!-- Home Screen / installed app -->
+<link rel="manifest" href="/manifest.json">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="PeekaSnap">
+<meta name="application-name" content="PeekaSnap">
+<meta name="format-detection" content="telephone=no">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
+<!-- iOS splash screens (portrait) -->
+<link rel="apple-touch-startup-image" media="(device-width: 440px) and (device-height: 956px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="/splash/splash-1320x2868.png">
+<link rel="apple-touch-startup-image" media="(device-width: 402px) and (device-height: 874px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="/splash/splash-1206x2622.png">
+<link rel="apple-touch-startup-image" media="(device-width: 430px) and (device-height: 932px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="/splash/splash-1290x2796.png">
+<link rel="apple-touch-startup-image" media="(device-width: 393px) and (device-height: 852px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="/splash/splash-1179x2556.png">
+<link rel="apple-touch-startup-image" media="(device-width: 428px) and (device-height: 926px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="/splash/splash-1284x2778.png">
+<link rel="apple-touch-startup-image" media="(device-width: 390px) and (device-height: 844px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="/splash/splash-1170x2532.png">
+<link rel="apple-touch-startup-image" media="(device-width: 375px) and (device-height: 812px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="/splash/splash-1125x2436.png">
+<link rel="apple-touch-startup-image" media="(device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="/splash/splash-1242x2688.png">
+<link rel="apple-touch-startup-image" media="(device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="/splash/splash-828x1792.png">
+<link rel="apple-touch-startup-image" media="(device-width: 414px) and (device-height: 736px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="/splash/splash-1242x2208.png">
+<link rel="apple-touch-startup-image" media="(device-width: 375px) and (device-height: 667px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="/splash/splash-750x1334.png">
+<title>PeekaSnap · Photo hide &amp; seek</title>
+<link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<!-- ============ ONBOARDING ============ -->
+<section id="onboard" class="screen onboard hidden">
+  <div class="logo-blob">👀</div>
+  <h1>PeekaSnap</h1>
+  <p class="tag">Snap it. Hide it. Make your friends hunt for it.</p>
+  <form id="signup-form" class="onboard-form">
+    <input id="signup-name" maxlength="24" placeholder="Your display name" autocomplete="nickname" required>
+    <button class="btn-dark" type="submit">Let's play</button>
+  </form>
+  <p class="fine">No password needed. Your name is saved on this device.</p>
+</section>
+
+<!-- ============ MAIN APP ============ -->
+<section id="app" class="screen hidden">
+  <header class="topbar">
+    <button id="me-btn" class="avatar-btn" title="You"></button>
+    <button id="group-pill" class="pill">👀 <span id="group-name">No group</span> ▾</button>
+    <button id="board-btn" class="round-btn" title="Leaderboard">🏆</button>
+  </header>
+
+  <!-- CAMERA -->
+  <div id="view-camera" class="view">
+    <video id="cam-video" autoplay playsinline muted></video>
+    <div id="cam-fallback" class="cam-fallback hidden">
+      <div class="big-emoji">📸</div>
+      <p>Tap the shutter to snap the object you want to hide</p>
+    </div>
+    <div class="cam-side">
+      <button id="cam-flip" class="round-btn glass" title="Flip camera">🔄</button>
+    </div>
+    <div id="cam-stories" class="story-strip floating"></div>
+    <div class="cam-controls">
+      <button id="cam-upload" class="round-btn glass" title="Choose photo">🖼️</button>
+      <button id="shutter" class="shutter" aria-label="Take photo"></button>
+      <span class="spacer-48"></span>
+    </div>
+    <input id="file-capture" type="file" accept="image/*" capture="environment" hidden>
+    <input id="file-pick" type="file" accept="image/*" hidden>
+  </div>
+
+  <!-- MAP -->
+  <div id="view-map" class="view hidden">
+    <div id="map"></div>
+    <button id="locate-btn" class="round-btn map-locate" title="My location">📍</button>
+    <div id="map-stories" class="story-strip map-strip"></div>
+  </div>
+
+  <!-- CHAT -->
+  <div id="view-chat" class="view hidden">
+    <div class="chat-head">
+      <div>
+        <div id="chat-title" class="chat-title">Group</div>
+        <div id="chat-sub" class="chat-sub"></div>
+      </div>
+      <button id="share-code" class="pill small">Invite</button>
+    </div>
+    <div id="chat-stories" class="story-strip light"></div>
+    <div id="chat-feed" class="chat-feed"></div>
+    <form id="chat-form" class="chat-form">
+      <button type="button" id="chat-cam" class="round-btn">📷</button>
+      <input id="chat-input" placeholder="Send a chat" autocomplete="off" maxlength="500">
+      <button class="send-btn" type="submit">➤</button>
+    </form>
+    <input id="chat-file" type="file" accept="image/*" capture="environment" hidden>
+  </div>
+
+  <nav class="bottomnav">
+    <button data-view="map" class="nav-btn">🗺️<span>Map</span></button>
+    <button data-view="camera" class="nav-btn nav-cam active">📸<span>Camera</span></button>
+    <button data-view="chat" class="nav-btn">💬<span>Chat</span><i id="chat-dot" class="dot hidden"></i></button>
+  </nav>
+</section>
+
+<!-- ============ SNAP PREVIEW ============ -->
+<section id="preview" class="overlay hidden">
+  <img id="preview-img" alt="">
+  <button id="preview-close" class="round-btn glass corner-tl">✕</button>
+  <div class="preview-actions">
+    <button id="preview-retake" class="btn-glass">Retake</button>
+    <button id="preview-hide" class="btn-red">Hide it 🫣</button>
+  </div>
+</section>
+
+<!-- ============ CREATE HIDE SHEET ============ -->
+<section id="hide-sheet" class="sheet-wrap hidden">
+  <div class="sheet tall">
+    <div class="grab"></div>
+    <div class="sheet-head"><h2>Hide your object</h2><button class="x" data-close>✕</button></div>
+    <form id="hide-form" class="sheet-body">
+      <div class="hide-top">
+        <img id="hide-thumb" alt="">
+        <div class="grow">
+          <label>What is it?</label>
+          <input id="hide-object" maxlength="60" placeholder="e.g. Red rubber duck" required>
+          <div class="hint-text">Hiding in <b id="hide-group-name"></b></div>
+        </div>
+      </div>
+      <label>Play area &amp; hiding spot</label>
+      <div class="map-tools">
+        <button type="button" id="hz-center-me" class="chip">🎯 Center on me</button>
+        <button type="button" id="hz-spot-me" class="chip red">🫣 I'm at the hiding spot</button>
+      </div>
+      <div id="hide-map"></div>
+      <div class="hint-text">Drag 🎯 to move the play area. Drag 🫣 (or tap the map) to mark where it's hidden. Seekers never see 🫣.</div>
+      <label>Area radius: <b id="radius-val">300 m</b></label>
+      <input id="hide-radius" type="range" min="30" max="3000" step="10" value="300">
+      <div class="row2">
+        <div><label>First ping</label>
+          <select id="first-ping">
+            <option value="5" selected>5 min after hiding</option>
+            <option value="10">in 10 min</option><option value="15">in 15 min</option>
+            <option value="30">in 30 min</option><option value="60">in 1 hour</option>
+            <option value="custom">at a set time…</option>
+          </select>
+          <input id="first-ping-at" type="datetime-local" class="hidden">
+        </div>
+        <div><label>Then every</label>
+          <select id="ping-interval">
+            <option value="1">1 min</option><option value="2">2 min</option><option value="5" selected>5 min</option>
+            <option value="10">10 min</option><option value="15">15 min</option><option value="30">30 min</option>
+            <option value="60">1 hour</option><option value="1440">1 day</option>
+          </select>
+        </div>
+        <div><label>Pings</label>
+          <select id="ping-count"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option><option>6</option><option>8</option><option>10</option></select>
+        </div>
+      </div>
+      <div class="hint-text">The first ping waits at least <b>5 min</b> after you mark the spot, so you can get away. Each ping alerts everyone, shrinks the hint circle around the hidden spot, and unlocks one hot/cold check. If nobody finds it one interval after the last ping, you win.</div>
+      <div id="hide-err" class="err"></div>
+      <button class="btn-red wide" type="submit" id="hide-submit">Hide it &amp; start the hunt</button>
+    </form>
+  </div>
+</section>
+
+<!-- ============ MOVE / RENAME SHEET (hider, after each ping) ============ -->
+<section id="move-sheet" class="sheet-wrap hidden">
+  <div class="sheet tall">
+    <div class="grab"></div>
+    <div class="sheet-head"><h2>🔀 Move or rename</h2><button class="x" data-close>✕</button></div>
+    <form id="move-form" class="sheet-body">
+      <div class="move-banner">📡 Ping <b id="move-ping-n"></b> just fired. You get <b>one</b> move before the next ping<span id="move-deadline"></span>.</div>
+      <div class="hide-top">
+        <div class="photo-swap"><img id="move-thumb" alt=""><button type="button" id="move-photo-btn" class="chip">📸 New photo</button></div>
+        <div class="grow">
+          <label>Object name</label>
+          <input id="move-object" maxlength="60" placeholder="Rename it">
+          <div class="hint-text">Seekers get told it was renamed.</div>
+        </div>
+      </div>
+      <label>New hiding spot</label>
+      <div class="map-tools">
+        <button type="button" id="mv-spot-me" class="chip red">📍 I'm at the new spot</button>
+        <button type="button" id="mv-reset" class="chip">↩️ Keep old spot</button>
+      </div>
+      <div id="move-map"></div>
+      <div class="hint-text">Drag 🫣 or tap the map to move it. It must stay inside the play area (dashed circle). Seekers only learn that it moved, not where. The next ping's hint circle restarts around the new spot, and moving it pushes the next ping to <b>at least 5 min</b> after you mark the new spot.</div>
+      <input id="move-file" type="file" accept="image/*" capture="environment" hidden>
+      <div id="move-err" class="err"></div>
+      <button class="btn-red wide" type="submit" id="move-submit">Save changes</button>
+    </form>
+  </div>
+</section>
+
+<!-- ============ GROUPS SHEET ============ -->
+<section id="groups-sheet" class="sheet-wrap hidden">
+  <div class="sheet">
+    <div class="grab"></div>
+    <div class="sheet-head"><h2>Your groups</h2><button class="x" data-close>✕</button></div>
+    <div class="sheet-body">
+      <div id="group-list" class="group-list"></div>
+      <form id="join-form" class="inline-form">
+        <input id="join-code" placeholder="Join code (e.g. K7P2QX)" maxlength="6" autocapitalize="characters">
+        <button class="btn-dark">Join</button>
+      </form>
+      <form id="create-form" class="inline-form">
+        <input id="create-emoji" class="emoji-in" value="👀" maxlength="4">
+        <input id="create-name" placeholder="New group name" maxlength="32">
+        <button class="btn-red">Create</button>
+      </form>
+      <button id="notif-btn" class="btn-glass dark wide">🔔 Turn on ping alerts</button>
+      <button id="install-btn" class="btn-glass dark wide hidden">📲 Add to Home Screen</button>
+      <div id="groups-err" class="err"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ LEADERBOARD SHEET ============ -->
+<section id="board-sheet" class="sheet-wrap hidden">
+  <div class="sheet">
+    <div class="grab"></div>
+    <div class="sheet-head"><h2>🏆 Leaderboard</h2><button class="x" data-close>✕</button></div>
+    <div class="sheet-body"><div id="board-list"></div>
+      <div class="hint-text">Find = 10 pts + 5 per ping left · Hider = 3 per ping survived · Escape (nobody found it) = +10</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ STORY VIEWER (hide detail) ============ -->
+<section id="story" class="overlay story hidden">
+  <div id="story-bars" class="story-bars"></div>
+  <div class="story-head">
+    <div id="story-avatar" class="avatar"></div>
+    <div class="grow"><b id="story-hider"></b><div id="story-time" class="muted"></div></div>
+    <button id="story-close" class="round-btn glass">✕</button>
+  </div>
+  <img id="story-img" alt="">
+  <div class="story-bottom">
+    <div id="story-status" class="story-status"></div>
+    <h2 id="story-object"></h2>
+    <div id="story-countdown" class="countdown"></div>
+    <div id="story-claims"></div>
+    <div id="story-actions" class="story-actions"></div>
+  </div>
+  <input id="find-file" type="file" accept="image/*" capture="environment" hidden>
+</section>
+
+<!-- ============ INSTALL / ALERTS PROMPT ============ -->
+<section id="install-card" class="install-card hidden" role="dialog" aria-label="Add to Home Screen">
+  <img src="/icons/icon-192.png" alt="" class="install-icon">
+  <div class="grow">
+    <b id="install-title">Add PeekaSnap to your Home Screen</b>
+    <div id="install-body" class="install-body">Full-screen, one tap to open, and ping alerts like a real app.</div>
+    <ol id="install-ios" class="install-ios hidden">
+      <li>Tap <span class="ios-share" aria-label="Share"><svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 3l4 4h-3v8h-2V7H8l4-4z" fill="currentColor"/><path d="M5 10h3v2H7v8h10v-8h-1v-2h3v12H5V10z" fill="currentColor"/></svg> Share</span> in Safari's toolbar</li>
+      <li>Scroll down, tap <b>Add to Home Screen</b> <span class="ios-plus">＋</span></li>
+      <li>Tap <b>Add</b>, then open PeekaSnap from your Home Screen</li>
+    </ol>
+    <div class="install-actions">
+      <button id="install-go" class="btn-red small-btn">Install</button>
+      <button id="install-later" class="btn-glass small-btn">Not now</button>
+    </div>
+  </div>
+  <button id="install-x" class="x install-x" aria-label="Close">✕</button>
+</section>
+
+<div id="ping-banner" class="ping-banner hidden"></div>
+<div id="toasts" class="toasts"></div>
+
+<script src="/vendor/leaflet/leaflet.js"></script>
+<script src="/socket.io/socket.io.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

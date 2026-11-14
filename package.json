@@ -1,0 +1,25 @@
+{
+  "name": "hide-seek-game",
+  "version": "0.1.0",
+  "description": "PeekaSnap - photo hide-and-seek game with groups, timed pings and a Snapchat-style UI",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/smoke.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "express": "^5.3.0",
+    "leaflet": "^1.9.4",
+    "multer": "^2.5.0",
+    "socket.io": "^4.8.4",
+    "web-push": "^4.0.0"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.65.1",
+    "socket.io-client": "^4.8.4"
+  }
+}
