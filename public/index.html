@@ -49,10 +49,12 @@
     <div id="signup-err" class="form-err" role="alert" aria-live="assertive"></div>
     <button class="btn-dark" type="submit">Sign up</button>
   </form>
+  <div id="auth-note" class="auth-note hidden" role="status"></div>
   <form id="login-form" novalidate class="onboard-form hidden">
     <div class="at-input"><span>@</span><input id="login-username" maxlength="20" placeholder="username" autocapitalize="none" autocomplete="username" spellcheck="false" required></div>
     <input id="login-password" type="password" maxlength="200" placeholder="Password" autocomplete="current-password" required>
     <div id="login-err" class="form-err" role="alert" aria-live="assertive"></div>
+    <button id="login-to-signup" class="btn-red hidden" type="button">Sign up as <b id="login-to-signup-user"></b></button>
     <button class="btn-dark" type="submit">Log in</button>
   </form>
   <form id="setpw-form" novalidate class="onboard-form hidden">

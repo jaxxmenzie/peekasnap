@@ -61,7 +61,7 @@ const IOS_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebK
     await page.press('#login-password', 'Enter');
     await page.waitForFunction(() => document.querySelector('#login-err').classList.contains('show'), null, { timeout: 30000 });
     if (S) await page.screenshot({ path: path.join(__dirname, '..', 'screenshots', '32-log-in-wrong-password.png') });
-    ok(/wrong username or password/i.test(await errText(page, 'login-err')), `wrong password: visible error "${await errText(page, 'login-err')}"`);
+    ok(/wrong password/i.test(await errText(page, 'login-err')), `wrong password: visible error "${await errText(page, 'login-err')}"`);
     await ctx.setOffline(true);
     await page.fill('#login-password', 'secret123'); await page.press('#login-password', 'Enter');
     await page.waitForFunction(() => document.querySelector('#login-err').classList.contains('show'), null, { timeout: 15000 });
@@ -72,6 +72,29 @@ const IOS_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebK
     ok(true, 'correct password logs in');
     ok(!errors.length, 'no page errors' + (errors.length ? ': ' + errors.join(' | ') : ''));
     await ctx.close();
+
+    // account that doesn't exist (e.g. wiped by a free-server restart) -> clear message + Sign up shortcut with username filled in
+    { const nctx = await browser.newContext(phone); const np = await nctx.newPage(); await np.goto(BASE + '/', { waitUntil: 'networkidle' });
+      const ghost = 'gh' + tag;
+      await np.click('#tab-login'); await np.fill('#login-username', ghost); await np.fill('#login-password', 'ghostpass1'); await np.press('#login-password', 'Enter');
+      await np.waitForFunction(() => document.querySelector('#login-err').classList.contains('show'), null, { timeout: 30000 });
+      const msg = await errText(np, 'login-err');
+      ok(/no account with the username @/i.test(msg) && /sign up/i.test(msg), `no such account: clear error "${msg}"`);
+      ok(await np.isVisible('#login-to-signup') && (await np.textContent('#login-to-signup')).includes('@' + ghost), 'no such account: "Sign up as @name" button shown');
+      if (S) await np.screenshot({ path: path.join(__dirname, '..', 'screenshots', '43-login-no-account.png') });
+      await np.click('#login-to-signup');
+      ok(await np.isVisible('#signup-form') && await np.inputValue('#signup-username') === ghost && await np.inputValue('#signup-password') === 'ghostpass1', 'Sign up shortcut opens Sign up with username + password filled in');
+      await np.fill('#signup-name', 'Ghost'); await np.press('#signup-name', 'Enter');
+      await np.waitForSelector('#app:not(.hidden)', { timeout: 30000 }); ok(true, 'signing up from the shortcut works');
+      // simulate the server losing accounts: saved token stops working -> signed-out note, username prefilled
+      await np.evaluate(() => localStorage.setItem('ps_token', 'stale-token-from-wiped-server'));
+      await np.reload({ waitUntil: 'networkidle' });
+      await np.waitForSelector('#login-form:not(.hidden)', { timeout: 30000 });
+      const note = await np.textContent('#auth-note');
+      ok(await np.isVisible('#auth-note') && note.includes('@' + ghost), `stale saved login: explains sign-out "${note.trim().slice(0, 60)}…"`);
+      ok(await np.inputValue('#login-username') === ghost, 'stale saved login: username prefilled on Log in');
+      if (S) await np.screenshot({ path: path.join(__dirname, '..', 'screenshots', '44-signed-out-note.png') });
+      await nctx.close(); }
 
     // installed Home Screen app (standalone)
     const sctx = await browser.newContext({ ...phone, userAgent: IOS_UA.replace(' Version/18.1', '').replace(' Safari/604.1', '') });

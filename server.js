@@ -276,7 +276,8 @@ app.post('/api/login', (req, res) => {
   if (loginBlocked(key)) return res.status(429).json({ error: 'Too many tries. Wait 15 minutes and try again.' });
   const u = Object.values(db.users).find(x => x.username === username);
   if (u && !u.passHash) return res.status(403).json({ error: 'This account has no password yet. Open PeekaSnap on the device you signed up on and it will ask you to set one.', needsPassword: true });
-  if (!u || !checkPassword(req.body.password || '', u.passHash)) { noteFail(key); return res.status(401).json({ error: 'Wrong username or password' }); }
+  if (!u) { noteFail(key); return res.status(404).json({ error: `No account with the username @${username.slice(0, 20)}. Sign up?`, noAccount: true, username: username.slice(0, 20) }); }
+  if (!checkPassword(req.body.password || '', u.passHash)) { noteFail(key); return res.status(401).json({ error: 'Wrong password for @' + username + '. Try again.' }); }
   loginFails.delete(key);
   const token = newSession(u); save();
   res.json({ user: { ...publicUser(u), shareLocation: !!u.shareLocation }, token });

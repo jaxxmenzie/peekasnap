@@ -592,3 +592,5 @@ button.loading::before{content:"";display:inline-block;width:14px;height:14px;ma
 #call-controls,#call-incoming{margin-top:auto}
 .call.video #call-local:not(.live){display:none}
 .call-btn{color:#fff;font-weight:900}
+.auth-note{max-width:340px;width:100%;margin:0 0 12px;background:rgba(255,255,255,.07);border:1.5px solid var(--line);border-radius:14px;padding:10px 12px;font-size:13px;line-height:1.4;color:#ddd;font-weight:600}
+#login-to-signup{width:100%}

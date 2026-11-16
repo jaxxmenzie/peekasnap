@@ -18,7 +18,11 @@ const { startServer, reporter, once } = require('./helpers');
     await new Promise(r => setTimeout(r, 1500)); const raw = fs.readFileSync(dir + '/d/db.json', 'utf8');
     ok(!raw.includes('hunter22') && /scrypt\$/.test(raw) && !raw.includes(p.token), 'stored as a scrypt hash; raw password and token never saved');
     ok((await api('/api/login', { body: { username: 'pat', password: 'wrongpass' } })).status === 401, 'wrong password rejected');
-    ok((await api('/api/login', { body: { username: 'nobody', password: 'hunter22' } })).status === 401, 'unknown username rejected (same message)');
+    { const r = await api('/api/login', { body: { username: '@Nobody', password: 'hunter22' } });
+      ok(r.status === 404 && r.noAccount === true && r.username === 'nobody', 'unknown username: 404 noAccount with the username');
+      ok(/no account with the username @nobody/i.test(r.error) && /sign up/i.test(r.error), 'unknown username: clear "No account… Sign up?" message'); }
+    { const r = await api('/api/login', { body: { username: 'pat', password: 'wrongpass2' } });
+      ok(r.status === 401 && !r.noAccount && /wrong password/i.test(r.error), 'wrong password for a real account: says wrong password, not "no account"'); }
     const l = await api('/api/login', { body: { username: '@PAT', password: 'hunter22' } });
     ok(l.token && l.token !== p.token, 'log in with password (case-insensitive username) creates a new session');
     const sk = io(S.BASE, { auth: { token: l.token } }); await once(sk, 'connect', 5000); ok(sk.connected, 'realtime socket accepts the session token'); sk.close();

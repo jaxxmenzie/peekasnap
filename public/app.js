@@ -200,7 +200,13 @@ async function boot() {
   if (!S.token) return showOnboard();
   try { const me = await api('/api/me'); S.user = me.user; S.groups = me.groups; }
   catch (e) {
-    if (e.status === 401) { localStorage.removeItem('ps_token'); S.token = null; return showOnboard('login'); }
+    if (e.status === 401) { // saved login no longer valid (logged out elsewhere, or the free server was reset and lost accounts)
+      localStorage.removeItem('ps_token'); S.token = null;
+      const last = localStorage.getItem('ps_last_user');
+      showOnboard('login', last ? `You were signed out of @${last}. Log in again, or if PeekaSnap says the account doesn't exist, sign up again with the same username.` : 'You were signed out. Log in again.');
+      if (last) $('#login-username').value = last;
+      return;
+    }
     bootTries = (bootTries || 0) + 1; toast(bootTries > 1 ? e.message : 'Connecting to PeekaSnap…'); // e.g. server waking up
     if (bootTries < 8) setTimeout(boot, 3000); return;
   }
@@ -214,7 +220,9 @@ async function boot() {
   startWatch(); ensurePush();
   setTimeout(maybeShowInstallCard, 2500);
 }
-function showOnboard(mode = 'signup') {
+function showOnboard(mode = 'signup', note = '') {
+  $('#auth-note').textContent = note; $('#auth-note').classList.toggle('hidden', !note || mode === 'setpw');
+  $('#login-to-signup').classList.add('hidden');
   $('#onboard').classList.remove('hidden'); $('#app').classList.add('hidden');
   ['signup', 'login', 'setpw'].forEach(m => $('#' + m + '-form').classList.toggle('hidden', m !== mode));
   $('.auth-tabs').classList.toggle('hidden', mode === 'setpw');
@@ -224,6 +232,13 @@ function showOnboard(mode = 'signup') {
 }
 $('#tab-signup').onclick = () => showOnboard('signup');
 $('#tab-login').onclick = () => showOnboard('login');
+// "No account with that username": jump to Sign up with the username (and password) already filled in
+$('#login-to-signup').onclick = () => {
+  const u = $('#login-username').value.trim().toLowerCase().replace(/^@/, ''), pw = $('#login-password').value;
+  showOnboard('signup');
+  const su = $('#signup-username'); su.value = u; su.dataset.touched = 1; $('#signup-password').value = pw;
+  setTimeout(() => $('#signup-name').focus(), 60);
+};
 async function afterAuth(token) {
   S.token = token; localStorage.setItem('ps_token', token); if (S.socket) S.socket.auth.token = token;
   const q = new URLSearchParams(location.search);
@@ -257,7 +272,7 @@ $('#signup-form').onsubmit = e => {
     : pw.value.length < 6 ? { el: pw, msg: 'Password must be at least 6 characters.' } : null,
   async () => {
     const r = await api('/api/signup', { body: { name: name.value.trim(), username: user.value, password: pw.value } });
-    pw.value = ''; await afterAuth(r.token);
+    pw.value = ''; localStorage.setItem('ps_last_user', r.user.username); await afterAuth(r.token);
   });
 };
 $('#login-form').onsubmit = e => {
@@ -266,8 +281,14 @@ $('#login-form').onsubmit = e => {
   runAuthForm(e.target, 'login-err', () =>
     !user.value.trim() ? { el: user, msg: 'Enter your username.' } : !pw.value ? { el: pw, msg: 'Enter your password.' } : null,
   async () => {
-    const r = await api('/api/login', { body: { username: user.value, password: pw.value } });
-    pw.value = ''; await afterAuth(r.token);
+    $('#login-to-signup').classList.add('hidden');
+    let r;
+    try { r = await api('/api/login', { body: { username: user.value, password: pw.value } }); }
+    catch (err) {
+      if (err.data?.noAccount) { $('#login-to-signup-user').textContent = '@' + err.data.username; $('#login-to-signup').classList.remove('hidden'); user.classList.add('bad'); }
+      throw err;
+    }
+    pw.value = ''; localStorage.setItem('ps_last_user', r.user.username); await afterAuth(r.token);
   });
 };
 $('#setpw-form').onsubmit = e => {
