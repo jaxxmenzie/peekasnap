@@ -4,8 +4,8 @@
   "description": "PeekaSnap - Snapchat-style photo app with Hide & Seek and Manhunt game modes",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "test": "node test/smoke.js && node test/auth.js && node test/social.js && node test/manhunt.js && node test/profile.js && node test/calls.js && node test/memories.js"
+    "start": "node start.js",
+    "test": "node test/smoke.js && node test/auth.js && node test/social.js && node test/manhunt.js && node test/profile.js && node test/calls.js && node test/memories.js && node test/persist.js"
   },
   "engines": {
     "node": ">=18"
@@ -15,10 +15,13 @@
     "express": "^5.3.0",
     "leaflet": "^1.9.4",
     "multer": "^2.5.0",
+    "pg": "^8.23.1",
     "socket.io": "^4.8.4",
     "web-push": "^4.0.0"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.16",
+    "@electric-sql/pglite-socket": "^0.2.19",
     "playwright-core": "^1.65.1",
     "socket.io-client": "^4.8.4"
   }

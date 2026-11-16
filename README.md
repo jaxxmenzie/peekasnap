@@ -16,7 +16,7 @@ node test/calls-ui.js [URL]   # phone-browser calls (two browsers, fake camera/m
 node test/screenshots.js   # regenerate screenshots (needs Chrome at /usr/bin/google-chrome or CHROME=...)
 ```
 
-Needs Node 18+. Optional env vars: `PORT`, `DATA_DIR`, `UPLOAD_DIR`, `FIND_RADIUS_M` (default 25), `MIN_PING_DELAY_MS` (default 300000 = 5 min), `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY`/`VAPID_SUBJECT` (push), `ALLOW_TEST_CLOCK=1` (tests only). No database to install: data lives in `data/db.json`, photos in `uploads/` (Peak photos in a private `data/snaps/`).
+Needs Node 18+. Optional env vars: `PORT`, `DATA_DIR`, `UPLOAD_DIR`, `FIND_RADIUS_M` (default 25), `MIN_PING_DELAY_MS` (default 300000 = 5 min), `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY`/`VAPID_SUBJECT` (push), `ALLOW_TEST_CLOCK=1` (tests only). No database needed locally: data lives in `data/db.json`, photos in `uploads/` (Peak photos in a private `data/snaps/`). Set `DATABASE_URL` (any Postgres, e.g. Neon) to make everything durable — see **Durable storage** below. `STORAGE_CAP_MB` (default 700) refuses new photo uploads once Postgres storage gets near that size.
 
 ## The app
 
@@ -86,7 +86,7 @@ PeekaSnap is an installable PWA. It opens full-screen in portrait with a black s
 
 **Camera and GPS only work over HTTPS** (or on `localhost`). All of the hosts below give you HTTPS automatically.
 
-- **Render** (easiest): push this folder to GitHub → render.com → New → Web Service → pick the repo. Build `npm install`, start `npm start`. The free tier sleeps when idle (about 30 s to wake up) and **wipes the disk on each restart/deploy**. For persistent data, add a Render Disk (paid) and set `DATA_DIR` and `UPLOAD_DIR` to a folder on it.
+- **Render** (easiest): push this folder to GitHub → render.com → New → Web Service → pick the repo. Build `npm install`, start `npm start`. The free tier sleeps when idle (about 30 s to wake up) and **wipes the disk on each restart/deploy**, so set `DATABASE_URL` to a Postgres database (the live app uses a free Neon project in Oregon, next to Render's Oregon region) and data survives restarts and deploys.
 - **Railway**: New Project → Deploy from GitHub repo. It detects Node and runs `npm start`. Add a Volume mounted at `/data` and set `DATA_DIR=/data/db` and `UPLOAD_DIR=/data/uploads` so games survive redeploys. Uses trial or free monthly credits.
 - **Fly.io**: `fly launch` (uses the included `Dockerfile`), then `fly volumes create data --size 1`, and add `[mounts] source="data" destination="/data"` to `fly.toml`. Then `fly deploy`.
 - **Quick test from your own computer**: `npm start`, then `npx localtunnel --port 3000` or `cloudflared tunnel --url http://localhost:3000` gives you a temporary HTTPS link to share.
@@ -105,5 +105,16 @@ Run a single instance. Ping timers and the JSON store live in one process.
 - Accounts have no email or password reset: if you forget your password, the account can't be recovered. Story and chat photo URLs are unguessable but not access-controlled (Peak photos are private and served once).
 - No screenshot detection or blocking (browsers don't allow it).
 - GPS can be off by 5–30 m, which is why tags and finds have a confirm fallback. Background location doesn't run on iOS/Android web when the app is closed, so keep the app open during a Manhunt.
-- On Render's free plan the data file and uploaded photos (profile pictures, Memories and saved Peaks included) are wiped on every deploy/restart, and the service sleeps when idle (first load can take ~1 min). When that happens accounts are gone: logging in shows **“No account with the username @name. Sign up?”** with a one-tap **Sign up as @name** button (username and password carried over), and a phone whose saved login stopped working sees a “You were signed out of @name” note with the username filled in. A wrong password for an existing account says “Wrong password for @name”.
+- Without `DATABASE_URL`, Render's free plan wipes the data file and uploaded photos on every deploy/restart. With it (as on the live app) nothing is lost. The service still sleeps when idle (first load can take ~1 min). If an account is ever missing: logging in shows **“No account with the username @name. Sign up?”** with a one-tap **Sign up as @name** button (username and password carried over), and a phone whose saved login stopped working sees a “You were signed out of @name” note with the username filled in. A wrong password for an existing account says “Wrong password for @name”.
 - Uses the public OpenStreetMap tile server: fine for a small group, not heavy traffic.
+
+## Durable storage (Postgres / Neon)
+
+`npm start` runs `start.js`: when `DATABASE_URL` is set it first restores everything from Postgres onto the (empty) disk, then starts `server.js` unchanged. `lib/store.js` keeps Postgres in sync:
+
+- **Records** — every user (with scrypt password hash), session, friendship, nickname, chat, message, Peak, Memory, story, group, Hide & Seek / Manhunt game, push subscription, call log entry… is one row in `ps_records (coll, id, data jsonb)`. Each `save()` writes **only the rows that changed** (and deletes removed ones) in a single transaction, about 0.5 s after the change, so even a crash loses at most that last half second. Writes are serialized (one transaction at a time) and retried every 5 s if the database is unreachable.
+- **Photos** — avatars, Peaks, Memories (+ thumbnails), stories, chat/hide photos and the Web Push keys are stored as `bytea` in `ps_files (path, data)` (they're already small, compressed JPEGs). Expired stories and viewed view-once Peaks are deleted from Postgres when they're purged on disk.
+- **Shutdown** — on SIGTERM (Render restart, deploy, or free-plan spin-down) everything pending is written before exit.
+- **Deploys** — while Render briefly runs the old and new instance side by side, the new one pulls in anything the old one writes for 3 minutes (unless it changed the same record itself).
+- **Size** — `GET /healthz` shows `usedMB`/`capMB`. Uploads are refused with “PeekaSnap storage is full” above `STORAGE_CAP_MB` (default 700 MB; Neon free = 1 GB).
+- Tables are created automatically on first boot. Without `DATABASE_URL` (tests, local dev) it's the plain JSON file as before. `node test/persist.js` checks restarts, crashes, deploy overlap, deletes and the cap against a throwaway Postgres (`TEST_DATABASE_URL`, or a local in-process PGlite by default).

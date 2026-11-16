@@ -1,5 +1,6 @@
 // PeekaSnap - photo hide-and-seek game server
-// Express (REST + static) + Socket.IO (realtime) + JSON-file storage + photos on disk.
+// Express (REST + static) + Socket.IO (realtime) + JSON-file storage + photos on disk,
+// mirrored to Postgres by lib/store.js when DATABASE_URL is set (see start.js).
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -8,6 +9,7 @@ const express = require('express');
 const multer = require('multer');
 const { Server } = require('socket.io');
 const webpush = require('web-push');
+const store = require('./lib/store');
 
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -26,6 +28,7 @@ fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 // ---------- storage ----------
 let db = { users: {}, groups: {}, hides: {}, messages: [], subs: {}, friends: {}, snaps: {}, stories: {}, reads: {}, locs: {}, streaks: {}, hunts: {} };
 try { db = Object.assign(db, JSON.parse(fs.readFileSync(DB_FILE, 'utf8'))); } catch (_) {}
+store.attach(db); // no-op without DATABASE_URL
 let saveTimer = null;
 function save() {
   clearTimeout(saveTimer);
@@ -33,6 +36,7 @@ function save() {
     const tmp = DB_FILE + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(db));
     fs.renameSync(tmp, DB_FILE);
+    store.changed();
   }, 200);
 }
 // ---------- Web Push (VAPID keys from env, or generated once and kept in DATA_DIR) ----------
@@ -168,7 +172,10 @@ app.get('/api/version', (req, res) => res.json({ build: BUILD }));
 app.use(express.static(path.join(__dirname, 'public'), { setHeaders: (res, f) => { if (/\.(html|js|css)$/.test(f)) res.set('Cache-Control', 'no-cache'); } }));
 app.use('/uploads', express.static(UPLOAD_DIR, { maxAge: '7d' }));
 app.use('/vendor/leaflet', express.static(path.join(__dirname, 'node_modules/leaflet/dist')));
-app.get('/healthz', (req, res) => res.json({ ok: true }));
+app.get('/healthz', (req, res) => res.json({ ok: true, ...store.status() }));
+// keep under the Neon free plan's 1 GB: refuse new photo uploads once storage is nearly full
+app.use((req, res, next) => (req.method === 'POST' && /multipart/i.test(req.headers['content-type'] || '') && store.overCap())
+  ? res.status(507).json({ error: 'PeekaSnap storage is full right now. Delete some Memories and try again.' }) : next());
 app.get('/api/config', (req, res) => res.json({ minPingDelayMs: MIN_PING_DELAY_MS, findRadiusM: FIND_RADIUS_M }));
 
 const upload = multer({
