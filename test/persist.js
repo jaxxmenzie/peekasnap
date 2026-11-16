@@ -102,6 +102,9 @@ function boot(port, env = {}) {
     ok(chat3.messages?.some(m => m.text === 'sent to the old instance'), 'deploy overlap: message sent to the old instance appears on the new one');
     const leeMe = await D.api('/api/me', { token: late.token });
     ok(leeMe.user?.avatar && (await fetch(D.BASE + leeMe.user.avatar)).status === 200, 'deploy overlap: photo uploaded to the old instance is served by the new one');
+    const merges = () => (D.log().match(/\[store\] merged/g) || []).length;
+    const m1 = merges(); await wait(10000);
+    ok(m1 >= 1 && merges() === m1, `deploy overlap: merges once, then goes quiet (${m1} merge log line(s), no repeats)`);
     C.proc.kill('SIGTERM'); await C.exited;
     // ---- deletes persist too ----
     const del = await D.api(`/api/chats/${dm}/messages/${lateMsg.message?.id}`, { token: pat.token, method: 'DELETE' });
