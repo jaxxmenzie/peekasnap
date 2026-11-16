@@ -594,3 +594,8 @@ button.loading::before{content:"";display:inline-block;width:14px;height:14px;ma
 .call-btn{color:#fff;font-weight:900}
 .auth-note{max-width:340px;width:100%;margin:0 0 12px;background:rgba(255,255,255,.07);border:1.5px solid var(--line);border-radius:14px;padding:10px 12px;font-size:13px;line-height:1.4;color:#ddd;font-weight:600}
 #login-to-signup{width:100%}
+#cam-fb-msg{max-width:320px;line-height:1.4;font-weight:600}
+.cam-fallback button{margin-top:12px;width:100%;max-width:300px}
+.cam-fallback{padding-bottom:calc(var(--nav) + 140px + var(--safe-b))}
+#view-camera.flash::after{content:'';position:absolute;inset:0;background:#fff;opacity:.75;z-index:9;pointer-events:none}
+#call-local.mirror{transform:scaleX(-1)}

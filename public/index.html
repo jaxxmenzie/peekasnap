@@ -80,7 +80,9 @@
   <!-- CAMERA (home) -->
   <div id="view-camera" class="view">
     <video id="cam-video" autoplay playsinline muted></video>
-    <div id="cam-fallback" class="cam-fallback hidden"><div class="big-emoji">📸</div><p>Tap the shutter to take a Peak</p></div>
+    <div id="cam-fallback" class="cam-fallback hidden"><div class="big-emoji">📸</div><p id="cam-fb-msg">Tap the shutter to take a Peak</p>
+      <button id="cam-enable" class="btn-red hidden" type="button">Enable camera</button>
+      <button id="cam-native" class="btn-glass dark hidden" type="button">📷 Use iPhone camera instead</button></div>
     <div id="hide-mode-pill" class="hide-mode-pill hidden">🫣 Take a Peak of the object you want to hide <button id="hide-mode-x">✕</button></div>
     <div class="cam-controls">
       <button id="cam-memories" class="round-btn glass" title="Memories">🗂️</button>

@@ -23,13 +23,21 @@ function stopRing() { clearInterval(C.ring); C.ring = null; navigator.vibrate?.(
 async function getMedia(kind) {
   if (!navigator.mediaDevices?.getUserMedia) throw new Error('Calls need a browser with camera/mic access (open PeekaSnap over https).');
   try {
-    return await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: kind === 'video' ? { facingMode: C.facing, width: { ideal: 720 }, height: { ideal: 1280 } } : false });
+    return await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: kind === 'video' ? { facingMode: { ideal: C.facing }, width: { ideal: 720 }, height: { ideal: 1280 } } : false });
   } catch (e) {
+    if (e.name === 'NotReadableError') throw new Error('Your camera/mic is busy in another app. Close it and try again.');
     throw new Error(e.name === 'NotAllowedError' ? `Allow ${kind === 'video' ? 'camera and microphone' : 'microphone'} access to call.` : "Couldn't start your " + (kind === 'video' ? 'camera/mic' : 'mic') + '.');
   }
 }
 
 // ---- UI ----
+// show our own camera (mirrored when it's the selfie camera) and make sure iOS actually plays it
+function showLocal() {
+  const v = $('#call-local'), tr = C.local?.getVideoTracks()[0]; if (!tr) return;
+  const f = tr.getSettings?.().facingMode || C.facing;
+  v.muted = true; v.playsInline = true; v.srcObject = C.local; v.classList.add('live'); v.classList.toggle('mirror', f === 'user');
+  v.play?.().catch(() => {});
+}
 function showCallScreen(peer, kind, mode) {
   stopCamera(); setAvatar($('#call-av'), peer); $('#call-name').textContent = peer.name;
   const v = callView(); v.classList.remove('hidden'); v.classList.toggle('video', kind === 'video'); v.classList.remove('connected');
@@ -41,8 +49,8 @@ function showCallScreen(peer, kind, mode) {
   callStatus(mode === 'incoming' ? (kind === 'video' ? 'Incoming video call…' : 'Incoming voice call…') : 'Calling…');
 }
 function hideCallScreen() {
-  callView().classList.add('hidden'); $('#call-remote').srcObject = null; $('#call-local').srcObject = null; $('#call-local').classList.remove('live'); $('#call-audio').srcObject = null;
-  if (S.view === 'camera' && !anyOverlayOpen()) startCamera();
+  callView().classList.add('hidden'); $('#call-remote').srcObject = null; $('#call-local').srcObject = null; $('#call-local').classList.remove('live', 'mirror'); $('#call-audio').srcObject = null;
+  if (S.view === 'camera' && !anyOverlayOpen()) setTimeout(startCamera, 250); // give iOS a moment to release the call's camera
 }
 
 // ---- outgoing ----
@@ -53,7 +61,7 @@ async function startCall(peer, kind = 'audio') {
   C.call = { pending: true, kind, peer }; C.role = 'caller'; C.muted = C.camOff = false;
   showCallScreen(peer, kind, 'outgoing'); callStatus('Starting…');
   try { C.local = await getMedia(kind); } catch (e) { toast(e.message); C.call = null; return hideCallScreen(); }
-  if (kind === 'video') { $('#call-local').srcObject = C.local; $('#call-local').classList.add('live'); }
+  if (kind === 'video') showLocal();
   if (!C.call) return cleanupMedia(); // hung up meanwhile
   S.socket.emit('call:start', { to: peer.id, kind }, r => {
     if (r.error) { toast(r.error, r.busy ? 'y' : ''); callStatus(r.busy ? 'Busy' : r.error); setTimeout(endLocal, r.busy ? 1500 : 0); return; }
@@ -72,7 +80,7 @@ $('#call-accept').onclick = async () => {
   const c = C.call; if (!c || C.role !== 'callee') return;
   stopRing(); callStatus('Connecting…'); $('#call-incoming').classList.add('hidden'); $('#call-controls').classList.remove('hidden');
   try { C.local = await getMedia(c.kind); } catch (e) { toast(e.message); S.socket.emit('call:decline', { callId: c.callId }); return endLocal(); }
-  if (c.kind === 'video') { $('#call-local').srcObject = C.local; $('#call-local').classList.add('live'); }
+  if (c.kind === 'video') showLocal();
   await makePC(); // ready before accepting: the caller sends its offer as soon as it hears we picked up
   S.socket.emit('call:accept', { callId: c.callId }, r => { if (r.error) { toast(r.error); endLocal(); } });
 };
@@ -145,12 +153,21 @@ function endLocal() {
 $('#call-mute').onclick = () => { C.muted = !C.muted; C.local?.getAudioTracks().forEach(t => (t.enabled = !C.muted)); $('#call-mute').classList.toggle('on', C.muted); $('#call-mute small').textContent = C.muted ? 'Unmute' : 'Mute'; };
 $('#call-cam').onclick = () => { C.camOff = !C.camOff; C.local?.getVideoTracks().forEach(t => (t.enabled = !C.camOff)); $('#call-cam').classList.toggle('on', C.camOff); $('#call-local').classList.toggle('off', C.camOff); };
 $('#call-flip').onclick = async () => {
-  if (!C.local) return; C.facing = C.facing === 'user' ? 'environment' : 'user';
-  try {
-    const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: C.facing } }), nt = s.getVideoTracks()[0];
-    const old = C.local.getVideoTracks()[0]; await C.pc?.getSenders().find(x => x.track?.kind === 'video')?.replaceTrack(nt);
-    if (old) { C.local.removeTrack(old); old.stop(); } C.local.addTrack(nt); nt.enabled = !C.camOff; $('#call-local').srcObject = C.local;
-  } catch (_) { toast("Couldn't switch camera"); }
+  if (!C.local || C.flipping) return; C.flipping = true;
+  const to = C.facing === 'user' ? 'environment' : 'user';
+  const sender = C.pc?.getSenders().find(x => x.track?.kind === 'video');
+  const get = f => navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: f }, width: { ideal: 720 }, height: { ideal: 1280 } } });
+  const old = C.local.getVideoTracks()[0];
+  if (old) { C.local.removeTrack(old); old.stop(); } // iOS can only open one camera at a time: release first
+  let nt;
+  try { nt = (await get(to)).getVideoTracks()[0]; C.facing = to; }
+  catch (_) { toast("Couldn't switch camera"); try { nt = (await get(C.facing)).getVideoTracks()[0]; } catch (_) {} }
+  if (nt) {
+    nt.enabled = !C.camOff; C.local.addTrack(nt);
+    try { await sender?.replaceTrack(nt); } catch (_) {}
+    if (!C.call) nt.stop(); else showLocal();
+  }
+  C.flipping = false;
 };
 $('#call-speaker').onclick = async () => { // only where the browser lets a page pick the audio output
   try {

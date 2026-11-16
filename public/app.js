@@ -377,26 +377,117 @@ function setView(v) {
 $$('.nav-btn').forEach(b => b.onclick = () => setView(b.dataset.view));
 
 // ---------- camera ----------
-let stream = null, facing = 'environment';
-async function startCamera() {
-  if (stream || !navigator.mediaDevices?.getUserMedia) { if (!stream) $('#cam-fallback').classList.remove('hidden'); return; }
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facing, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
-    if (S.view !== 'camera' || anyOverlayOpen()) return stopCamera();
-    $('#cam-video').srcObject = stream; $('#cam-fallback').classList.add('hidden');
-    $('#cam-video').classList.toggle('mirror', facing === 'user');
-  } catch (_) { $('#cam-fallback').classList.remove('hidden'); }
-}
-function stopCamera() { stream?.getTracks().forEach(t => t.stop()); stream = null; }
+// iPhone notes: iOS ends/mutes the camera track whenever the app goes to the background, the native camera opens
+// (file inputs with capture), or a call grabs the camera; autoplay can be refused in Home Screen mode; only one
+// camera can be open at a time. So: every start gets a generation number (late results are stopped, never leaked),
+// the old stream is always stopped before a new one is requested, play() is awaited, the camera restarts on
+// return / on track end, and failures show a clear message with "Enable camera" + "Use iPhone camera" buttons.
+let stream = null, facing = localStorage.getItem('ps_facing') === 'user' ? 'user' : 'environment', camGen = 0, camMirror = false, camPending = null;
+const camVideo = () => $('#cam-video');
 const anyOverlayOpen = () => $$('.overlay').some(o => !o.classList.contains('hidden'));
-$('#cam-flip').onclick = () => { facing = facing === 'environment' ? 'user' : 'environment'; stopCamera(); startCamera(); };
+const camWanted = () => S.view === 'camera' && !$('#app').classList.contains('hidden') && !anyOverlayOpen() && document.visibilityState !== 'hidden' && !(typeof C !== 'undefined' && C.call);
+const camLive = () => !!stream && stream.getVideoTracks().some(t => t.readyState === 'live' && !t.muted);
+function camShow(state, msg = '') { // state: live | starting | tap | error
+  const fb = $('#cam-fallback'); $('#view-camera').dataset.cam = state;
+  fb.classList.toggle('hidden', state === 'live' || state === 'starting');
+  $('#cam-fb-msg').textContent = msg || 'Tap the shutter to take a Peak';
+  $('#cam-enable').classList.toggle('hidden', !(state === 'tap' || state === 'error'));
+  $('#cam-enable').textContent = state === 'tap' ? 'Tap to start camera' : 'Enable camera';
+  $('#cam-native').classList.toggle('hidden', state !== 'error');
+}
+function camError(e) {
+  const n = e?.name || e;
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
+  if (n === 'NotAllowedError' || n === 'SecurityError') return camShow('error', ios
+    ? 'PeekaSnap needs camera access. Tap Enable camera and choose Allow. No prompt? iPhone Settings → Apps → Safari → Camera → Ask, then try again.'
+    : 'PeekaSnap needs camera access. Tap Enable camera and allow it (or allow the camera in your browser’s site settings).');
+  if (n === 'NotReadableError' || n === 'AbortError' || n === 'TrackStartError') return camShow('error', 'Your camera is busy (a call or another app is using it). Close it, then tap Enable camera.');
+  if (n === 'NotFoundError' || n === 'OverconstrainedError') return camShow('error', 'No camera found on this device. You can still take a photo with your phone’s camera app.');
+  if (n === 'unsupported') return camShow('error', 'This browser can’t show a live camera. You can still take a photo with your phone’s camera.');
+  camShow('error', n === 'stuck' ? 'The camera preview stayed black. Tap Enable camera to try again.' : 'The camera didn’t start. Tap Enable camera to try again.');
+}
+async function camPlay(v) {
+  try { await v.play(); } catch (_) { /* autoplay refused (e.g. iOS Low Power Mode): needs a tap */ }
+  if (v.paused) return camShow('tap', 'Camera is ready — tap to start it.');
+  if (!v.videoWidth) await new Promise(r => { const t = setTimeout(r, 1500); v.addEventListener('loadedmetadata', () => { clearTimeout(t); r(); }, { once: true }); });
+  camShow('live');
+}
+function startCamera() {
+  if (!camWanted()) return Promise.resolve();
+  if (camLive()) { const v = camVideo(); return v.paused ? camPlay(v) : Promise.resolve(); }
+  if (camPending && camPending.facing === facing && camPending.gen === camGen) return camPending.promise;
+  if (!navigator.mediaDevices?.getUserMedia) { camError('unsupported'); return Promise.resolve(); }
+  stopCamera(); // iOS: only one camera at a time, release the old one first
+  const gen = ++camGen, want = facing;
+  camShow('starting');
+  const promise = (async () => {
+    let s;
+    try {
+      try { s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: want }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false }); }
+      catch (e) { if (e.name !== 'OverconstrainedError') throw e; s = await navigator.mediaDevices.getUserMedia({ video: true, audio: false }); }
+    } catch (e) { if (gen === camGen) camError(e); return; }
+    finally { if (camPending?.gen === gen) camPending = null; }
+    if (gen !== camGen || !camWanted()) { s.getTracks().forEach(t => t.stop()); return; } // superseded (flip / left the tab / call)
+    stream = s;
+    const tr = s.getVideoTracks()[0];
+    const real = tr.getSettings?.().facingMode; camMirror = real ? real === 'user' : want === 'user';
+    tr.addEventListener('ended', () => { if (stream === s) { stream = null; startCamera(); } }); // iOS: camera taken away
+    tr.addEventListener('mute', () => setTimeout(() => { if (stream === s && tr.muted && camWanted()) { stopCamera(); startCamera(); } }, 1500));
+    const v = freshVideo(); v.srcObject = s; // brand-new <video> each time: iOS can keep a re-used one black
+    v.classList.toggle('mirror', camMirror);
+    camStartedAt = Date.now();
+    await camPlay(v);
+  })();
+  camPending = { gen, facing: want, promise };
+  return promise;
+}
+// A fresh <video> for every stream. Re-using one whose old stream was stopped is the classic iOS
+// "camera works the first time, black the second time" bug.
+function freshVideo() {
+  const old = camVideo(), v = document.createElement('video');
+  v.id = 'cam-video'; v.className = old.className;
+  for (const a of ['autoplay', 'playsinline', 'muted']) v.setAttribute(a, '');
+  v.muted = true; v.playsInline = true; v.autoplay = true;
+  try { old.pause(); old.srcObject = null; } catch (_) {}
+  old.replaceWith(v); return v;
+}
+// Watchdog: if the preview is still blank (no frames) or the track died without telling us, start over.
+let camStartedAt = 0, camRetries = 0;
+setInterval(() => {
+  if (!camWanted() || !stream || camPending || Date.now() - camStartedAt < 1500) return;
+  const v = camVideo(), tr = stream.getVideoTracks()[0];
+  const dead = !tr || tr.readyState === 'ended', blank = !v.videoWidth || v.readyState < 2 || v.srcObject !== stream;
+  if ($('#view-camera').dataset.cam === 'tap' && !dead) return; // waiting for the user's tap
+  if (dead || blank || (v.paused && !dead)) {
+    if (camRetries++ >= 3) { stopCamera(); camRetries = 0; return camError('stuck'); }
+    stopCamera(); startCamera();
+  } else camRetries = 0;
+}, 700);
+function stopCamera() {
+  camGen++; camPending = null;
+  stream?.getTracks().forEach(t => t.stop()); stream = null;
+  const v = camVideo(); if (v.srcObject) { v.pause(); v.srcObject = null; } // frees the camera (green dot) on iOS
+}
+$('#cam-flip').onclick = () => { facing = facing === 'environment' ? 'user' : 'environment'; localStorage.setItem('ps_facing', facing); stopCamera(); startCamera(); };
+$('#cam-enable').onclick = e => { e.stopPropagation(); const v = camVideo(); if (camLive() && v.paused) return camPlay(v); stopCamera(); startCamera(); }; // inside a tap, so iOS can show its prompt
+$('#cam-native').onclick = e => { e.stopPropagation(); $('#file-capture').click(); };
+$('#cam-fallback').onclick = () => { if ($('#view-camera').dataset.cam === 'tap') $('#cam-enable').click(); };
+// restart when coming back to the app / closing a native picker; release it when the app is hidden
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') stopCamera(); else if (camWanted()) startCamera(); });
+window.addEventListener('pageshow', () => { if (camWanted()) startCamera(); });
+window.addEventListener('focus', () => { if (camWanted() && !camLive()) startCamera(); });
+document.addEventListener('click', e => { if (e.target.matches?.('input[type=file][capture]')) stopCamera(); }, true); // native camera needs it free
+document.addEventListener('change', e => { if (e.target.matches?.('input[type=file]')) setTimeout(() => camWanted() && startCamera(), 300); }, true);
+document.addEventListener('cancel', e => { if (e.target.matches?.('input[type=file]')) setTimeout(() => camWanted() && startCamera(), 300); }, true);
 $('#shutter').onclick = () => {
-  const v = $('#cam-video');
-  if (!stream || !v.videoWidth) return $('#file-capture').click();
+  const v = camVideo();
+  if (camLive() && v.paused) return camPlay(v); // first tap after autoplay was refused just starts the preview
+  if (!camLive() || !v.videoWidth || v.readyState < 2) return $('#file-capture').click(); // no live preview: use the phone's camera
   const c = document.createElement('canvas'); c.width = v.videoWidth; c.height = v.videoHeight;
-  const g = c.getContext('2d'); if (facing === 'user') { g.translate(c.width, 0); g.scale(-1, 1); }
-  g.drawImage(v, 0, 0);
-  c.toBlob(b => openEditor(b), 'image/jpeg', 0.9);
+  const g = c.getContext('2d'); if (camMirror) { g.translate(c.width, 0); g.scale(-1, 1); } // selfie saved the way it looked
+  g.drawImage(v, 0, 0, c.width, c.height);
+  $('#view-camera').classList.add('flash'); setTimeout(() => $('#view-camera').classList.remove('flash'), 180);
+  c.toBlob(b => b ? openEditor(b) : toast("Couldn't take the photo, try again"), 'image/jpeg', 0.9);
 };
 $('#cam-upload').onclick = () => $('#file-pick').click();
 ['#file-capture', '#file-pick'].forEach(s => $(s).onchange = e => { const f = e.target.files[0]; if (f) openEditor(f); e.target.value = ''; });

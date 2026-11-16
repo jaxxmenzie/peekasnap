@@ -158,6 +158,7 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { maxHttpBufferSize: 1e6 });
 app.set('trust proxy', 1); // Render terminates TLS in front of us; req.ip = real client
+app.use((req, res, next) => { res.set('Permissions-Policy', 'camera=(self), microphone=(self), geolocation=(self)'); next(); });
 app.use(express.json({ limit: '200kb' }));
 // PWA files: correct manifest type, and never let browsers cache an old service worker
 app.get('/manifest.json', (req, res) => { res.type('application/manifest+json'); res.set('Cache-Control', 'no-cache'); res.sendFile(path.join(__dirname, 'public', 'manifest.json')); });
